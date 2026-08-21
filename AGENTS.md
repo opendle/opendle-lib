@@ -9,9 +9,13 @@ Move reusable backend code here so `fj2`, `crewday`, `llmrouter`, `ontology`,
 `xbot`, and future projects do not maintain copies of the same behavior.
 Use `opendle-ui` for shared React frontend code.
 
-Do not add product rules, application configuration, runtime data, secrets,
-credentials, or private user data to this repository. Keep the library
-independent of one host application.
+This is a public, source-available repository under FSL-1.1-ALv2. It changes
+to Apache-2.0 on the license schedule. Do not describe its current FSL version
+as open source.
+
+Never commit secrets, credentials, tokens, private data, internal-only
+configuration, or unpublished third-party material. Do not add product rules
+or runtime data. Keep the library independent of one host application.
 
 ## Working rules
 

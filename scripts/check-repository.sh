@@ -113,5 +113,6 @@ git diff --cached --check
 
 grep -Fqx "Copyright 2026 tubededentifrice" LICENSE.md
 grep -Fq "FSL-1.1-ALv2" README.md
+grep -Fq "public and source-available" README.md
 
 echo "Repository checks passed."

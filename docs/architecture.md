@@ -6,6 +6,11 @@ OpenDLE Lib contains reusable Python backend behavior and common backend
 contracts. It reduces duplicate implementation and makes tested improvements
 available to all OpenDLE projects.
 
+The repository is public and source-available under FSL-1.1-ALv2. Each version
+changes to Apache-2.0 on the license schedule. Repository content must not
+contain secrets, credentials, private data, internal-only configuration, or
+unpublished third-party material.
+
 The package does not own product behavior. Each consumer keeps its routes,
 domain policy, application configuration, data ownership, and service
 composition.

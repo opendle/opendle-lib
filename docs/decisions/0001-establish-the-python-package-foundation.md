@@ -21,6 +21,8 @@ the package.
 - Use `uv` for all supported Python operations.
 - Start at version `0.0.0` with no runtime dependencies.
 - Use FSL-1.1-ALv2.
+- Keep the repository public and describe its current FSL version as
+  source-available, not open source.
 - Keep shared React code in `opendle-ui`.
 - Make each consumer depend directly on the Git `main` branch.
 - Use strict library and consumer type checks as the static compatibility

@@ -4,8 +4,15 @@ OpenDLE Lib is the shared Python backend library for OpenDLE projects. It will
 reduce duplicate code in `fj2`, `crewday`, `llmrouter`, `ontology`, `xbot`, and
 future projects. `opendle-ui` has the same role for shared React frontend code.
 
+This repository is public and source-available under FSL-1.1-ALv2. Each
+version changes to Apache-2.0 on its license schedule. The current FSL version
+is not an open-source release.
+
 This repository contains the package and development scaffold only. It does
 not contain reusable library behavior yet.
+
+Do not commit secrets, credentials, tokens, private data, internal-only
+configuration, or unpublished third-party material.
 
 ## Package contract
 
