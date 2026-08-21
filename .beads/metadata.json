@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "opendle_lib",
+  "project_id": "2cd40ea0-71c4-42b2-a434-44872e67f214"
+}
