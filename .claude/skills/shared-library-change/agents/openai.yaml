@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shared Library Change"
+  short_description: "Change shared APIs and their consumers safely"
+  default_prompt: "Make this shared library change and update all affected consumers."

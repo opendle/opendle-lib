@@ -1,0 +1,4 @@
+interface:
+  display_name: "Self Review"
+  short_description: "Review changes before delivery"
+  default_prompt: "Review the current changes, fix material defects, and verify the final state."

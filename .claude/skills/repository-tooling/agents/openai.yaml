@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Tooling"
+  short_description: "Improve repository tools and quality gates"
+  default_prompt: "Improve this repository workflow or quality gate."

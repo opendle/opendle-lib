@@ -1,0 +1,47 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.local/
+*.key
+*.p12
+*.pem
+secrets/
+
+# Python environments and generated files
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test, coverage, lint, and type-check output
+.coverage
+.coverage.*
+.hypothesis/
+.mypy_cache/
+.pytest_cache/
+.pyright/
+.ruff_cache/
+coverage.xml
+htmlcov/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local agent and tool output
+.claude/scheduled_tasks.lock
+.playwright-mcp/
+reports/
+tmp/
+*.log
+
+# Runtime data does not belong in this package repository
+data/
+runtime-data/
+*.db
