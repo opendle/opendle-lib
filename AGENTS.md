@@ -17,6 +17,19 @@ Never commit secrets, credentials, tokens, private data, internal-only
 configuration, or unpublished third-party material. Do not add product rules
 or runtime data. Keep the library independent of one host application.
 
+## Shared OpenDLE boundary
+
+This repository is the home for reusable backend behavior and common backend
+contracts. Before adding backend code in a consumer, check this repository.
+If the behavior has credible use in more than one OpenDLE project, add it
+here, add focused tests, and update the consumer to use the direct Git
+`main` dependency. Keep product rules, routes, data models, and framework
+adapters in the consumer. Do not copy shared code between projects.
+
+Reusable React components, tokens, and interaction patterns belong in
+`../opendle-ui`. Host projects must check that repository first and use its
+current `main` dependency. Keep only product-specific UI in the host project.
+
 ## Working rules
 
 1. Read this file, `README.md`, and the relevant architecture or decision
