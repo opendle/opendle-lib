@@ -72,6 +72,7 @@ Use `uv` for dependency changes, commands, builds, and tools. Do not use
 - `src/opendle/`: public Python package
 - `tests/`: package and behavior tests
 - `docs/architecture.md`: package boundaries and evolution rules
+- `docs/shared-library-roadmap.md`: planned reusable backend capabilities
 - `docs/decisions/`: accepted architecture decisions
 - `scripts/`: deterministic repository checks
 - `.claude/skills/`: reusable agent workflows
