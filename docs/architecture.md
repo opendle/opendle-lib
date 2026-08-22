@@ -29,6 +29,10 @@ Framework-neutral code is the default. A framework integration must be in an
 isolated module. If it adds a runtime dependency, use an optional extra unless
 the dependency is necessary for all consumers.
 
+The public `opendle.oidc` module contains dependency-free authorization request
+primitives. Consumers keep provider HTTP calls, token exchange, identity-token
+validation, local sessions, grants, routes, and deployment configuration.
+
 ## Extraction rule
 
 Shared syntax is not sufficient evidence for a shared abstraction. Extract

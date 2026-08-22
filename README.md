@@ -8,8 +8,10 @@ This repository is public and source-available under FSL-1.1-ALv2. Each
 version changes to Apache-2.0 on its license schedule. The current FSL version
 is not an open-source release.
 
-This repository contains the package and development scaffold only. It does
-not contain reusable library behavior yet.
+The first shared capability supplies dependency-free OpenID Connect
+authorization request primitives. It validates canonical 256-bit Base64URL
+tokens, creates RFC 7636 S256 challenges, and builds bounded authorization-code
+URLs without letting an endpoint replace request-owned parameters.
 
 Do not commit secrets, credentials, tokens, private data, internal-only
 configuration, or unpublished third-party material.
