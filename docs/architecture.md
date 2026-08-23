@@ -54,8 +54,8 @@ uncertain failure stops the loop.
 
 Model compaction uses a caller hook and the exact preceding successful route.
 It does not resolve an assignment or use fallback. The hook must preserve the
-system prefix and active compatible suffix. A selected failure policy either
-stops or applies deterministic bounded pruning.
+system and tool prefix and the active compatible suffix. A selected failure
+policy either stops or applies deterministic bounded pruning.
 
 ## Extraction rule
 

@@ -44,6 +44,7 @@ __all__ = [
     "HarnessTool",
     "InMemoryConversationStore",
     "InvalidConversationError",
+    "ModelProtocolError",
     "RouteState",
     "SequentialToolExecutor",
     "StateLoader",
@@ -75,6 +76,10 @@ class InvalidConversationError(HarnessError):
 
 class ToolProtocolError(HarnessError):
     """Report an invalid tool call, result, or executor response."""
+
+
+class ModelProtocolError(HarnessError):
+    """Report a result that violates its model call route constraint."""
 
 
 class CompactionError(HarnessError):
@@ -171,6 +176,7 @@ class CompactionRequest:
     route: ExactModelSelector
     tags: tuple[str, ...]
     limits: ContextLimits
+    tools: tuple[ToolDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate the workspace, messages, tags, and conversation shape."""
@@ -178,6 +184,7 @@ class CompactionRequest:
             workspace_api_name=self.workspace_api_name,
             selector=self.route,
             messages=self.messages,
+            tools=self.tools,
             tags=normalize_tags(self.tags),
         )
         if call.tags != self.tags:
@@ -334,29 +341,32 @@ class ConversationHarness:
         definitions = tuple(tool.definition for tool in self._tools)
         sticky = route.sticky
         if sticky is not None:
-            try:
-                return await self._model_caller(
-                    ModelCall(
-                        workspace_api_name=self._config.workspace_api_name,
-                        selector=sticky,
-                        messages=messages,
-                        tools=definitions,
-                        tags=self._config.tags,
-                    )
-                )
-            except ModelCallError as error:
-                if error.phase is not CallFailurePhase.BEFORE_VISIBLE_OUTPUT:
-                    raise
-        return await self._model_caller(
-            ModelCall(
+            sticky_call = ModelCall(
                 workspace_api_name=self._config.workspace_api_name,
-                selector=AssignmentSelector(self._config.assignment_api_name),
+                selector=sticky,
                 messages=messages,
                 tools=definitions,
                 tags=self._config.tags,
-                excluded_routes=(sticky,) if sticky is not None else (),
             )
+            try:
+                result = await self._model_caller(sticky_call)
+            except ModelCallError as error:
+                if error.phase is not CallFailurePhase.BEFORE_VISIBLE_OUTPUT:
+                    raise
+            else:
+                _validate_model_result(sticky_call, result)
+                return result
+        assignment_call = ModelCall(
+            workspace_api_name=self._config.workspace_api_name,
+            selector=AssignmentSelector(self._config.assignment_api_name),
+            messages=messages,
+            tools=definitions,
+            tags=self._config.tags,
+            excluded_routes=(sticky,) if sticky is not None else (),
         )
+        result = await self._model_caller(assignment_call)
+        _validate_model_result(assignment_call, result)
+        return result
 
     async def _fit_context(
         self,
@@ -397,6 +407,7 @@ class ConversationHarness:
                 route=route.sticky,
                 tags=self._config.tags,
                 limits=limits,
+                tools=tuple(tool.definition for tool in self._tools),
             )
         )
         _validate_compaction(messages, compacted, limits)
@@ -580,6 +591,15 @@ def _validate_tool_results(
     ):
         msg = "The tool executor must return one result per call in order."
         raise ToolProtocolError(msg)
+
+
+def _validate_model_result(call: ModelCall, result: ModelCallResult) -> None:
+    if isinstance(call.selector, ExactModelSelector) and result.route != call.selector:
+        msg = "The model caller returned a route that does not match the exact call."
+        raise ModelProtocolError(msg)
+    if result.route in call.excluded_routes:
+        msg = "The model caller returned an excluded route."
+        raise ModelProtocolError(msg)
 
 
 def _validate_compaction(

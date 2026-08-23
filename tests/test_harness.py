@@ -27,6 +27,7 @@ from opendle import (
     ModelCall,
     ModelCallError,
     ModelCallResult,
+    ModelProtocolError,
     RouterContractError,
     RouteState,
     SequentialToolExecutor,
@@ -211,6 +212,33 @@ def test_sticky_failure_falls_back_once_and_replaces_route() -> None:
     assert updated.route.sticky == ExactModelSelector("route-b")
 
 
+@pytest.mark.parametrize("excluded_result", [False, True])
+def test_invalid_transport_result_route_stops_the_harness(
+    *, excluded_result: bool
+) -> None:
+    """A transport cannot replace an exact route or use an excluded route."""
+    if excluded_result:
+        responses: list[Response] = [
+            ModelCallError(
+                "upstream_failed",
+                "Failed before output.",
+                phase=CallFailurePhase.BEFORE_VISIBLE_OUTPUT,
+            ),
+            _result("route-a", TextOutputPart("Invalid.")),
+        ]
+    else:
+        responses = [_result("route-b", TextOutputPart("Invalid."))]
+    caller = FakeModelCaller(responses)
+    harness = ConversationHarness(model_caller=caller, tools=(), config=_config())
+
+    with pytest.raises(ModelProtocolError, match=r"exact call|excluded route"):
+        asyncio.run(
+            harness.run(
+                _state(UserMessage((TextInputPart("Start."),)), route="route-a")
+            )
+        )
+
+
 @pytest.mark.parametrize(
     "phase",
     [CallFailurePhase.AFTER_VISIBLE_OUTPUT, CallFailurePhase.UNCERTAIN],
@@ -302,10 +330,15 @@ def test_model_compaction_uses_pinned_route_and_accepted_result() -> None:
         requests.append(request)
         return (system, current)
 
+    definition = ToolDefinition("tool", "Tool.", "{}")
+
+    async def handler(_call: ToolCallPart) -> str:
+        return "{}"
+
     caller = FakeModelCaller([_result("route-a", TextOutputPart("Done."))])
     harness = ConversationHarness(
         model_caller=caller,
-        tools=(),
+        tools=(HarnessTool(definition, handler),),
         config=_config(method=ContextMethod.MODEL, max_messages=2),
         compactor=compact,  # type: ignore[arg-type]
     )
@@ -320,6 +353,7 @@ def test_model_compaction_uses_pinned_route_and_accepted_result() -> None:
 
     assert requests[0].route == ExactModelSelector("route-a")
     assert requests[0].messages == state.messages
+    assert requests[0].tools == (definition,)
     assert caller.calls[0].selector == ExactModelSelector("route-a")
     assert updated.messages[:2] == (system, current)
 

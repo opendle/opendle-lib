@@ -1,5 +1,6 @@
 """Tests for provider-neutral Router contract values."""
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -86,6 +87,8 @@ def test_tags_are_deduplicated_and_sorted_by_utf8_bytes() -> None:
         lambda: AssignmentSelector("Bad"),
         lambda: ExactModelSelector("Bad"),
         lambda: TextInputPart(""),
+        lambda: TextInputPart("\ud800"),
+        lambda: TextOutputPart("\ud800"),
         lambda: ImageInputPart("image/png", b""),
         lambda: ImageInputPart("image/gif", b"x"),  # type: ignore[arg-type]
         lambda: ToolResultPart("id", "not-json"),
@@ -147,6 +150,58 @@ def test_model_call_rejects_collection_maximums() -> None:
         ModelCall("workspace", AssignmentSelector("main"), (message,), tools)
     with pytest.raises(RouterContractError, match="32"):
         normalize_tags(tuple(f"tag-{index}" for index in range(33)))
+
+    routes = tuple(ExactModelSelector(f"route-{index}") for index in range(17))
+    with pytest.raises(RouterContractError, match="16 routes"):
+        replace(
+            ModelCall("workspace", AssignmentSelector("main"), (message,)),
+            excluded_routes=routes,
+        )
+
+
+def test_model_call_rejects_an_oversized_complete_json_body() -> None:
+    """Tool data and JSON structure count toward the native body limit."""
+    schema = json.dumps({"value": "x" * 99_000}, separators=(",", ":"))
+    tools = tuple(
+        ToolDefinition(f"tool-{index}", "Tool.", schema) for index in range(22)
+    )
+
+    with pytest.raises(RouterContractError, match="JSON body"):
+        ModelCall(
+            "workspace",
+            AssignmentSelector("main"),
+            (SystemMessage("system"),),
+            tools,
+        )
+
+
+def test_only_assignment_calls_can_exclude_routes() -> None:
+    """An exact native call cannot contain an assignment-only constraint."""
+    with pytest.raises(RouterContractError, match="assignment"):
+        ModelCall(
+            "workspace",
+            ExactModelSelector("route-a"),
+            (SystemMessage("system"),),
+            excluded_routes=(ExactModelSelector("route-b"),),
+        )
+
+
+def test_excluded_routes_count_toward_the_complete_json_body_limit() -> None:
+    """The native exclusion field cannot bypass the model-call byte limit."""
+    text = "x" * 698_800
+    messages = (
+        SystemMessage(text),
+        UserMessage((TextInputPart(text),)),
+        AssistantMessage((TextOutputPart(text),)),
+    )
+    base = ModelCall("workspace", AssignmentSelector("main"), messages)
+    routes = tuple(
+        ExactModelSelector(f"route-{index}-" + "x" * (54 - len(str(index))))
+        for index in range(16)
+    )
+
+    with pytest.raises(RouterContractError, match="JSON body"):
+        replace(base, excluded_routes=routes)
 
 
 def test_model_call_rejects_image_count_and_total_byte_maximums() -> None:

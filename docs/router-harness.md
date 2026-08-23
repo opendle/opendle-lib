@@ -33,11 +33,20 @@ use immutable tuples. The harness does not change the input state.
 `ModelCall` and returns one `ModelCallResult`. A caller or a later SDK adapter
 implements the live Router transport.
 
+The model call enforces the native 2 MiB JSON-body limit. This limit includes
+messages, tool definitions, tags, selectors, and JSON structure. It excludes
+uploaded image payload bytes, which have separate limits.
+
 An exact selector identifies one configured provider-model. The provider-model
 identifies the exact provider connection and wire model for sticky calls and
 compaction. An assignment call after a failed sticky call contains that route
-in `excluded_routes`. The transport must not run an excluded route in that
-assignment attempt.
+in `excluded_routes`. A native API adapter maps these routes to
+`excluded_provider_model_api_names`. The transport must not run an excluded
+route in that assignment attempt.
+
+The harness raises `ModelProtocolError` when an exact call returns a different
+route or an assignment call returns an excluded route. It does not put an
+invalid result route in conversation state.
 
 Raise `ModelCallError` for a safe provider-neutral call failure. Only
 `CallFailurePhase.BEFORE_VISIBLE_OUTPUT` permits the harness to continue from a
@@ -65,8 +74,8 @@ message. It fails when the required prefix or newest group cannot fit.
 Model compaction runs only when context exceeds the selected limits. The
 compaction request pins the exact route from the preceding successful workflow
 call. It does not contain assignment fallback. The hook receives the compatible
-conversation, workspace, tags, route, and limits. Its result must preserve the
-system prefix and active suffix and must fit both limits.
+conversation, tool definitions, workspace, tags, route, and limits. Its result
+must preserve the system prefix and active suffix and must fit both limits.
 
 The caller selects one compaction failure mode. `STOP` raises
 `CompactionError`. `PRUNE` uses deterministic pruning. The harness never retries

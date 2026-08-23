@@ -41,8 +41,10 @@ _MAXIMUM_JSON_TEXT = 1_000_000
 _MAXIMUM_IMAGE_BYTES = 20 * 1024 * 1024
 _MAXIMUM_IMAGES = 8
 _MAXIMUM_IMAGE_SET_BYTES = 50 * 1024 * 1024
+_MAXIMUM_MODEL_CALL_JSON_BYTES = 2 * 1024 * 1024
 _MAXIMUM_TOOL_SCHEMA = 100_000
 _MAXIMUM_ASSIGNMENT_NAME = 127
+_MAXIMUM_EXCLUDED_ROUTES = 16
 _MAXIMUM_MESSAGES = 1_000
 _MAXIMUM_TAGS = 32
 _MAXIMUM_TOOLS = 128
@@ -165,6 +167,10 @@ class TextOutputPart:
 
     text: str
     type: Literal["text"] = "text"
+
+    def __post_init__(self) -> None:
+        """Require text that the native UTF-8 contract can encode."""
+        _validate_utf8(self.text, name="text output")
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,8 +357,9 @@ class ModelCall:
         if self.tags != normalize_tags(self.tags):
             msg = "Model call tags must be normalized."
             raise RouterContractError(msg)
-        if len(set(self.excluded_routes)) != len(self.excluded_routes):
-            msg = "Excluded model routes must be unique."
+        _validate_excluded_routes(self.selector, self.excluded_routes)
+        if _model_call_bytes(self) > _MAXIMUM_MODEL_CALL_JSON_BYTES:
+            msg = "The model call JSON body is too large."
             raise RouterContractError(msg)
 
 
@@ -384,7 +391,7 @@ def normalize_tags(tags: tuple[str, ...]) -> tuple[str, ...]:
         raise RouterContractError(msg)
     encoded: list[tuple[bytes, str]] = []
     for tag in tags:
-        tag_bytes = tag.encode("utf-8")
+        tag_bytes = _validate_utf8(tag, name="Router tag")
         if not 1 <= len(tag_bytes) <= _MAXIMUM_TAG_BYTES:
             msg = "A Router tag has an invalid UTF-8 byte size."
             raise RouterContractError(msg)
@@ -405,6 +412,53 @@ def message_bytes(messages: tuple[ModelMessage, ...]) -> int:
             separators=(",", ":"),
         ).encode("utf-8")
     )
+
+
+def _model_call_bytes(call: ModelCall) -> int:
+    value: dict[str, object] = {
+        "workspace_api_name": call.workspace_api_name,
+        "selector": _selector_value(call.selector),
+        "messages": [_message_value(message) for message in call.messages],
+    }
+    if call.tools:
+        value["tools"] = [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema_json": tool.input_schema_json,
+            }
+            for tool in call.tools
+        ]
+    if call.tags:
+        value["tags"] = list(call.tags)
+    if call.excluded_routes:
+        value["excluded_provider_model_api_names"] = [
+            route.provider_model_api_name for route in call.excluded_routes
+        ]
+    return len(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _selector_value(selector: ModelSelector) -> dict[str, str]:
+    if isinstance(selector, AssignmentSelector):
+        return {"assignment_api_name": selector.assignment_api_name}
+    return {"provider_model_api_name": selector.provider_model_api_name}
+
+
+def _validate_excluded_routes(
+    selector: ModelSelector,
+    routes: tuple[ExactModelSelector, ...],
+) -> None:
+    if len(routes) > _MAXIMUM_EXCLUDED_ROUTES:
+        msg = "A model call can exclude no more than 16 routes."
+        raise RouterContractError(msg)
+    if len(set(routes)) != len(routes):
+        msg = "Excluded model routes must be unique."
+        raise RouterContractError(msg)
+    if routes and not isinstance(selector, AssignmentSelector):
+        msg = "Only an assignment call can exclude model routes."
+        raise RouterContractError(msg)
 
 
 def _message_value(message: ModelMessage) -> dict[str, object]:
@@ -449,6 +503,15 @@ def _bounded_text(value: str, *, name: str, maximum: int) -> None:
     if not 1 <= len(value) <= maximum:
         msg = f"The {name} is invalid."
         raise RouterContractError(msg)
+    _validate_utf8(value, name=name)
+
+
+def _validate_utf8(value: str, *, name: str) -> bytes:
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError:
+        msg = f"The {name} is not valid UTF-8 text."
+        raise RouterContractError(msg) from None
 
 
 def _json_text(value: str, *, name: str, maximum: int) -> object:
