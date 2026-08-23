@@ -8,10 +8,16 @@ This repository is public and source-available under FSL-1.1-ALv2. Each
 version changes to Apache-2.0 on its license schedule. The current FSL version
 is not an open-source release.
 
-The first shared capability supplies dependency-free OpenID Connect
-authorization request primitives. It validates canonical 256-bit Base64URL
-tokens, creates RFC 7636 S256 challenges, and builds bounded authorization-code
-URLs without letting an endpoint replace request-owned parameters.
+The package supplies dependency-free OpenID Connect authorization request
+primitives. It validates canonical 256-bit Base64URL tokens, creates RFC 7636
+S256 challenges, and builds bounded authorization-code URLs without letting an
+endpoint replace request-owned parameters.
+
+The package also supplies provider-neutral Router model contract values and a
+stateless multi-turn harness. The harness uses caller-owned conversation state,
+tools, storage callbacks, and transport ports. It supports exact sticky routes,
+bounded pruning, and pinned model compaction. It does not execute in Router and
+does not own durable storage. See `docs/router-harness.md` for the public API.
 
 Do not commit secrets, credentials, tokens, private data, internal-only
 configuration, or unpublished third-party material.
@@ -74,6 +80,7 @@ Use `uv` for dependency changes, commands, builds, and tools. Do not use
 - `src/opendle/`: public Python package
 - `tests/`: package and behavior tests
 - `docs/architecture.md`: package boundaries and evolution rules
+- `docs/router-harness.md`: Router contract and harness public API
 - `docs/shared-library-roadmap.md`: planned reusable backend capabilities
 - `docs/decisions/`: accepted architecture decisions
 - `scripts/`: deterministic repository checks

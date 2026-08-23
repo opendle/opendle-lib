@@ -33,6 +33,30 @@ The public `opendle.oidc` module contains dependency-free authorization request
 primitives. Consumers keep provider HTTP calls, token exchange, identity-token
 validation, local sessions, grants, routes, and deployment configuration.
 
+The public `opendle.router` module contains provider-neutral model messages,
+tool parts, selectors, usage values, model call results, and the model caller
+protocol. It has no HTTP client. A later transport adapter can map these values
+to the native Router API. An exact provider-model selector identifies one
+configured provider connection and wire model.
+
+The public `opendle.harness` module contains the stateless multi-turn loop. It
+accepts immutable caller-owned state and returns new state. The caller owns the
+transport, tools, durable storage, authorization, effects, recovery, and domain
+links. The module has no consumer import and no framework or data-store
+dependency. Its in-memory store has finite limits and is only for tests or
+short-lived processes.
+
+The harness sends one model call for an exact sticky route. It can send a
+separate assignment call after a failure before visible output. The assignment
+call carries an explicit exclusion for the failed sticky route. A transport
+adapter must enforce this exclusion. A failure after visible output or an
+uncertain failure stops the loop.
+
+Model compaction uses a caller hook and the exact preceding successful route.
+It does not resolve an assignment or use fallback. The hook must preserve the
+system prefix and active compatible suffix. A selected failure policy either
+stops or applies deterministic bounded pruning.
+
 ## Extraction rule
 
 Shared syntax is not sufficient evidence for a shared abstraction. Extract

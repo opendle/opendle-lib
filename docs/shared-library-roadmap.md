@@ -16,22 +16,22 @@ The list is a planning proposal. It is not a promise to move every item.
 The package must contain only behavior that has the same rules, invariants,
 and change reason in more than one consumer.
 
-The current package is a scaffold. No item in this document is implemented in
-`opendle-lib` yet.
+The package now contains OIDC request primitives and the accepted Python Router
+model contract and stateless multi-turn harness core. Other items in this
+document remain proposals until their shared boundary is accepted.
 
 ## Consumer status
 
-No named consumer currently declares `opendle-lib` or imports `opendle` in the
-local workspace.
+LLM Router and Ontology declare `opendle-lib` and use its OIDC primitives. The
+new Router harness API has no migrated consumer in this task because it is a
+new pre-1.0 contract.
 
 - `fj2`, `crewday`, `llmrouter`, and `ontology` have backend code that can
   provide extraction evidence.
 - `xbot` has product and contract documents but no Python backend yet. Its
   first backend should use stable shared primitives where the boundary is
   already clear.
-- `llmrouter` currently targets Python 3.13, while `opendle-lib` supports
-  Python 3.14 only. It needs a runtime upgrade before it can adopt the
-  package.
+- `llmrouter` and `ontology` use the direct Git `main` dependency.
 
 The roadmap therefore contains both extraction work and future implementation
 work. A future feature is not a reason to add a speculative public API now.
@@ -701,17 +701,17 @@ Keep official Router and Ontology clients in their service repositories. A
 client for one service is not a shared-library feature. A common Python
 transport helper is useful only if it has no Router or Ontology policy.
 
-### 17. LLM and model provider types
+### 17. Router model contract and shared harness
 
-This is a possible candidate with a narrow boundary. A shared package may
-define:
+The accepted Router specifications now define this implemented narrow
+boundary. The package defines:
 
-- provider capability values;
-- model and embedding request metadata;
-- usage and cost measurement values;
-- prompt and content safety result types;
-- provider adapter protocols;
-- cancellation and retry result types.
+- provider-neutral model messages, tools, selectors, results, and usage values;
+- an async model caller protocol without a built-in HTTP transport;
+- immutable conversation and exact sticky-route state;
+- sequential tool execution in model order and a replaceable batch executor;
+- deterministic bounded pruning and pinned model compaction hooks;
+- small load and save protocols and a bounded non-durable in-memory store.
 
 Evidence:
 
@@ -724,8 +724,10 @@ Evidence:
 - `xbot` plans to call the shared Router and must not duplicate its routing
   logic.
 
-Keep routing, provider selection, budgets, prompts, moderation policy, model
-catalogs, and service-specific data profiles in the owning application.
+Keep Router fallback policy, provider selection, budgets, prompts, moderation
+policy, model catalogs, HTTP transport, and service-specific data profiles in
+the owning application. Keep durable conversation storage, authorization,
+tool effects, and domain links in each caller.
 
 ### Financial and usage value types
 
@@ -868,8 +870,10 @@ that the records or permission rules should be shared.
    after their integration tests define the exact contract.
 8. Add optional FastAPI and Django adapters only when two consumers need the
    same adapter behavior.
-9. Revisit webhook, notification, LLM, privacy, and financial value
-   helpers after more than one consumer has a stable implementation.
+9. Add the accepted Router transport adapter after the native client task
+   defines and verifies the live integration.
+10. Revisit webhook, notification, privacy, and financial value helpers after
+    more than one consumer has a stable implementation.
 
 Every implemented capability must include success, error, boundary, replay,
 scope, and unauthorized-use tests where the capability supports those cases.
