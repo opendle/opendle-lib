@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast, override
 from urllib.error import HTTPError
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from opendle.router import (
@@ -123,10 +123,15 @@ _MAXIMUM_COMPLETE_REQUEST_BYTES = 70 * 1024 * 1024
 _MAXIMUM_EVENT_BYTES = 2 * 1024 * 1024
 _MAXIMUM_STREAM_EVENTS = 100_000
 _MAXIMUM_STREAM_OUTPUT_BYTES = 10_000_000
+_MAXIMUM_STREAM_RESPONSE_BYTES = 128 * 1024 * 1024
+_MAXIMUM_REQUEST_TIMEOUT_SECONDS = 900
+_MAXIMUM_MEDIA_WAIT_SECONDS = 86_400
 _MAXIMUM_RESPONSE_HEADERS = 100
 _MAXIMUM_RESPONSE_HEADER_BYTES = 64 * 1024
 _HTTP_SUCCESS_MINIMUM = 200
 _HTTP_SUCCESS_LIMIT = 300
+_HTTP_OK = 200
+_HTTP_NO_CONTENT = 204
 _HTTP_STATUS_MINIMUM = 100
 _HTTP_STATUS_MAXIMUM = 599
 _MAXIMUM_ASSIGNMENT_CHAIN = 16
@@ -156,6 +161,11 @@ class RouterError(RuntimeError):
 
 class RouterProtocolError(RouterError):
     """Report a response that does not match the native Router contract."""
+
+    def __init__(self, message: str, *, phase: CallFailurePhase | None = None) -> None:
+        """Initialize one safe protocol failure and optional stream phase."""
+        self.phase = phase
+        super().__init__(message)
 
 
 class RouterResponseLimitError(RouterProtocolError):
@@ -748,26 +758,23 @@ class RouterClient:
     ) -> None:
         """Initialize one dependency-free service-scoped client."""
         self._base_url = _base_url(base_url)
-        if (
-            not service_key
-            or len(service_key) > _MAXIMUM_SERVICE_KEY
-            or service_key.strip() != service_key
-            or any(
-                ord(character) < _PRINTABLE_ASCII_START
-                or ord(character) > _PRINTABLE_ASCII_END
-                for character in service_key
-            )
-        ):
+        if not _valid_service_key(service_key):
             msg = "The Router service key is invalid."
+            raise ValueError(msg)
+        if service_key in self._base_url or service_key in unquote(self._base_url):
+            msg = "The Router base URL cannot contain the service key."
             raise ValueError(msg)
         raw_timeout = cast("object", timeout)
         if (
             isinstance(raw_timeout, bool)
             or not isinstance(raw_timeout, (int, float))
             or not math.isfinite(raw_timeout)
-            or raw_timeout <= 0
+            or not 0 < raw_timeout <= _MAXIMUM_REQUEST_TIMEOUT_SECONDS
         ):
-            msg = "The Router timeout must be a positive finite number."
+            msg = (
+                "The Router timeout must be greater than 0 and no more than "
+                "900 seconds."
+            )
             raise ValueError(msg)
         raw_maximum = cast("object", maximum_success_response_bytes)
         if (
@@ -821,7 +828,10 @@ class RouterClient:
         self, *, cursor: str | None = None, limit: int = 50
     ) -> WorkspacePage:
         """Read one bounded workspace page."""
-        return _workspace_page(self._get("/v1/workspaces", _page_query(cursor, limit)))
+        return _workspace_page(
+            self._get("/v1/workspaces", _page_query(cursor, limit)),
+            maximum_items=limit,
+        )
 
     def iter_workspace_pages(
         self, *, max_pages: int, cursor: str | None = None, limit: int = 50
@@ -837,20 +847,29 @@ class RouterClient:
         """Create one workspace in the authenticated service."""
         _api_name(api_name, "workspace")
         _text(display_name, "workspace display name", 200)
-        return _workspace(
+        workspace = _workspace(
             self._json(
                 "POST",
                 "/v1/workspaces",
                 {"api_name": api_name, "display_name": display_name},
+                expected_status=201,
                 uncertain=True,
             )
         )
+        if workspace.api_name != api_name or workspace.display_name != display_name:
+            msg = "The Router workspace does not match its creation request."
+            raise RouterProtocolError(msg)
+        return workspace
 
     def get_workspace(self, workspace_api_name: str) -> Workspace:
         """Read one workspace in the authenticated service."""
-        return _workspace(
+        workspace = _workspace(
             self._get(f"/v1/workspaces/{_segment(workspace_api_name, api_name=True)}")
         )
+        if workspace.api_name != workspace_api_name:
+            msg = "The Router workspace does not match its request path."
+            raise RouterProtocolError(msg)
+        return workspace
 
     def delete_workspace(self, workspace_api_name: str) -> None:
         """Delete one workspace and its Router-owned dependent data."""
@@ -863,7 +882,8 @@ class RouterClient:
     ) -> AssignmentPage:
         """Read one bounded assignment page."""
         return _assignment_page(
-            self._get("/v1/assignments", _page_query(cursor, limit))
+            self._get("/v1/assignments", _page_query(cursor, limit)),
+            maximum_items=limit,
         )
 
     def iter_assignment_pages(
@@ -878,9 +898,13 @@ class RouterClient:
 
     def get_assignment(self, assignment_api_name: str) -> Assignment:
         """Read one current service assignment."""
-        return _assignment(
+        assignment = _assignment(
             self._get(f"/v1/assignments/{_assignment_segment(assignment_api_name)}")
         )
+        if assignment.api_name != assignment_api_name:
+            msg = "The Router assignment does not match its request path."
+            raise RouterProtocolError(msg)
+        return assignment
 
     def put_assignment(
         self,
@@ -900,6 +924,7 @@ class RouterClient:
         if display_name is not None:
             _text(display_name, "assignment display name", 200)
             body["display_name"] = display_name
+        expected_chain: tuple[ProviderModelCandidate, ...] | None = None
         if inherits_assignment_api_name is not None:
             _assignment_name(inherits_assignment_api_name)
             body["inherits_assignment_api_name"] = inherits_assignment_api_name
@@ -915,14 +940,37 @@ class RouterClient:
                 raise ValueError(msg)
             for route in chain:
                 _api_name(route, "provider-model")
+            expected_chain = tuple(ProviderModelCandidate(route) for route in chain)
             body["direct_chain"] = [
                 {"provider_model_api_name": route} for route in chain
             ]
         if reasoning_level is not None:
             body["reasoning_level"] = reasoning_level.value
-        return _assignment(
-            self._json("PUT", f"/v1/assignments/{name}", body, uncertain=True)
+        assignment = _assignment(
+            self._json(
+                "PUT",
+                f"/v1/assignments/{name}",
+                body,
+                expected_status=200,
+                uncertain=True,
+            )
         )
+        expected_kind = (
+            AssignmentDefinitionKind.INHERITED_ASSIGNMENT
+            if inherits_assignment_api_name is not None
+            else AssignmentDefinitionKind.DIRECT_CHAIN
+        )
+        if (
+            assignment.api_name != assignment_api_name
+            or assignment.definition_kind is not expected_kind
+            or assignment.inherits_assignment_api_name != inherits_assignment_api_name
+            or assignment.direct_chain != expected_chain
+            or assignment.reasoning_level is not reasoning_level
+            or (display_name is not None and assignment.display_name != display_name)
+        ):
+            msg = "The Router assignment does not match its replacement request."
+            raise RouterProtocolError(msg)
+        return assignment
 
     def delete_assignment(self, assignment_api_name: str) -> None:
         """Delete one local assignment definition."""
@@ -945,21 +993,32 @@ class RouterClient:
     ) -> ServiceKeyPage:
         """Read one bounded page of safe service-key metadata."""
         return _service_key_page(
-            self._get("/v1/service-keys", _page_query(cursor, limit))
+            self._get("/v1/service-keys", _page_query(cursor, limit)),
+            maximum_items=limit,
         )
 
     def create_service_key(self, name: str) -> ServiceKeyCreated:
         """Create one backend-only key and return its secret once."""
         _text(name, "service key name", 200)
         value = _closed(
-            self._json("POST", "/v1/service-keys", {"name": name}, uncertain=True),
+            self._json(
+                "POST",
+                "/v1/service-keys",
+                {"name": name},
+                expected_status=201,
+                uncertain=True,
+            ),
             {"key", "secret"},
         )
         secret = _string(value["secret"], "service key secret")
         if not _MINIMUM_SERVICE_KEY <= len(secret) <= _MAXIMUM_SERVICE_KEY:
             msg = "The Router service key secret has an invalid length."
             raise RouterProtocolError(msg)
-        return ServiceKeyCreated(_service_key(_object(value["key"])), secret)
+        key = _service_key(_object(value["key"]))
+        if key.name != name or not _valid_service_key(secret):
+            msg = "The Router service key does not match its creation request."
+            raise RouterProtocolError(msg)
+        return ServiceKeyCreated(key, secret)
 
     def revoke_service_key(self, key_id: str) -> None:
         """Revoke one service key by its opaque identity."""
@@ -970,7 +1029,8 @@ class RouterClient:
     ) -> AvailableProviderModelPage:
         """Read one page of enabled service-safe provider-models."""
         return _provider_model_page(
-            self._get("/v1/provider-models", _page_query(cursor, limit))
+            self._get("/v1/provider-models", _page_query(cursor, limit)),
+            maximum_items=limit,
         )
 
     def iter_provider_model_pages(
@@ -983,11 +1043,30 @@ class RouterClient:
             cursor=cursor,
         )
 
+    def iter_service_key_pages(
+        self, *, max_pages: int, cursor: str | None = None, limit: int = 50
+    ) -> Iterator[ServiceKeyPage]:
+        """Iterate service-key pages under one strict caller page bound."""
+        return self._iterate_pages(
+            lambda current: self.list_service_keys(cursor=current, limit=limit),
+            max_pages=max_pages,
+            cursor=cursor,
+        )
+
     def model_call(self, call: ModelCall) -> ModelResponse:
         """Make one native synchronous model call without an automatic retry."""
-        value = self._json("POST", "/v1/model-calls", _model_body(call), uncertain=True)
+        value = self._json(
+            "POST",
+            "/v1/model-calls",
+            _model_body(call),
+            expected_status=200,
+            uncertain=True,
+        )
         result = _model_response(value)
         _validate_result_route(call, result.route)
+        if (call.output_schema_json is None) != isinstance(result, ModelCallResult):
+            msg = "The Router model result does not match the requested output format."
+            raise RouterProtocolError(msg)
         return result
 
     def stream_model(self, call: ModelCall) -> Iterator[ModelStreamEvent]:
@@ -999,20 +1078,31 @@ class RouterClient:
                 error_body = _bounded_stream_body(
                     response.chunks, self._maximum_response_bytes
                 )
+                _validate_declared_length(response.headers, len(error_body))
+                _require_json_media_type(response.headers)
+                error = _api_error(
+                    response.status,
+                    _safe_json_object(error_body, self._service_key),
+                )
+            except RouterProtocolError as protocol_error:
+                protocol_error.phase = CallFailurePhase.UNCERTAIN
+                raise
             except RouterError:
                 raise
             except Exception:  # noqa: BLE001 - Custom iterators can raise any error.
                 raise RouterTransportError(uncertain_result=True) from None
-            _validate_declared_length(response.headers, len(error_body))
-            _require_json_media_type(response.headers)
-            raise _api_error(response.status, _json_object(error_body))
-        media_type = (
-            _header(response.headers, "Content-Type").split(";", 1)[0].strip().lower()
-        )
+            error.phase = CallFailurePhase.BEFORE_VISIBLE_OUTPUT
+            raise error
+        if response.status != _HTTP_OK:
+            msg = "The Router stream returned an unexpected success status."
+            raise RouterProtocolError(msg, phase=CallFailurePhase.UNCERTAIN)
+        media_type = _header_media_type(response.headers, "Content-Type")
         if media_type != "text/event-stream":
             msg = "The Router stream response media type is invalid."
-            raise RouterProtocolError(msg)
-        return _validated_stream_events(_stream_events(response.chunks), call)
+            raise RouterProtocolError(msg, phase=CallFailurePhase.UNCERTAIN)
+        return _validated_stream_events(
+            _stream_events(response.chunks, service_key=self._service_key), call
+        )
 
     def create_embedding(
         self,
@@ -1049,7 +1139,9 @@ class RouterClient:
         }
         if tags:
             body["tags"] = list(tags)
-        value = self._json("POST", "/v1/embeddings", body, uncertain=True)
+        value = self._json(
+            "POST", "/v1/embeddings", body, expected_status=200, uncertain=True
+        )
         result = _embedding_result(value, expected_count=len(items))
         _validate_selector_route(selector, result.route)
         return result
@@ -1090,7 +1182,15 @@ class RouterClient:
             body["input_images"] = [_image_value(image) for image in input_images]
         if tags:
             body["tags"] = list(tags)
-        job = _media_job(self._json("POST", "/v1/media-jobs", body, uncertain=True))
+        job = _media_job(
+            self._json(
+                "POST",
+                "/v1/media-jobs",
+                body,
+                expected_status=202,
+                uncertain=True,
+            )
+        )
         _validate_selector_route(selector, job.route)
         if job.workspace_api_name != workspace_api_name or job.kind is not kind:
             msg = "The Router media job does not match its creation request."
@@ -1099,7 +1199,21 @@ class RouterClient:
 
     def get_media_job(self, media_job_id: str) -> MediaJob:
         """Read one media job in the authenticated service scope."""
-        return _media_job(self._get(f"/v1/media-jobs/{_segment(media_job_id)}"))
+        return self._get_media_job(media_job_id, request_timeout=None)
+
+    def _get_media_job(
+        self, media_job_id: str, *, request_timeout: float | None
+    ) -> MediaJob:
+        job = _media_job(
+            self._get(
+                f"/v1/media-jobs/{_segment(media_job_id)}",
+                request_timeout=request_timeout,
+            )
+        )
+        if job.id != media_job_id:
+            msg = "The Router media job does not match its request path."
+            raise RouterProtocolError(msg)
+        return job
 
     def wait_media_job(
         self,
@@ -1114,9 +1228,9 @@ class RouterClient:
             isinstance(raw_timeout, bool)
             or not isinstance(raw_timeout, (int, float))
             or not math.isfinite(raw_timeout)
-            or raw_timeout < 0
+            or not 0 <= raw_timeout <= _MAXIMUM_MEDIA_WAIT_SECONDS
         ):
-            msg = "The media wait timeout must be finite and non-negative."
+            msg = "The media wait timeout must be from 0 through 86400 seconds."
             raise ValueError(msg)
         raw_interval = cast("object", poll_interval)
         if (
@@ -1129,13 +1243,19 @@ class RouterClient:
             raise ValueError(msg)
         deadline = time.monotonic() + timeout
         while True:
-            job = self.get_media_job(media_job_id)
-            if job.state in {MediaJobState.SUCCEEDED, MediaJobState.FAILED}:
-                return job
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 msg = "The media job did not finish before the wait timeout."
                 raise TimeoutError(msg)
+            job = self._get_media_job(
+                media_job_id, request_timeout=min(self._timeout, remaining)
+            )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                msg = "The media job did not finish before the wait timeout."
+                raise TimeoutError(msg)
+            if job.state in {MediaJobState.SUCCEEDED, MediaJobState.FAILED}:
+                return job
             time.sleep(min(poll_interval, remaining))
 
     def get_media_job_content(self, media_job_id: str) -> MediaContentResult:
@@ -1148,15 +1268,24 @@ class RouterClient:
         )
         if not _HTTP_SUCCESS_MINIMUM <= response.status < _HTTP_SUCCESS_LIMIT:
             _require_json_media_type(response.headers)
-            raise _api_error(response.status, _json_object(response.body))
+            raise _api_error(
+                response.status,
+                _safe_json_object(response.body, self._service_key),
+            )
+        if response.status != _HTTP_OK:
+            msg = "The Router media content returned an unexpected success status."
+            raise RouterProtocolError(msg)
         _response_size(response.body, self._maximum_response_bytes)
-        media_type = _header(response.headers, "Content-Type").split(";", 1)[0].strip()
+        media_type = _header_media_type(response.headers, "Content-Type")
         if not media_type:
             msg = "The generated media response has no media type."
             raise RouterProtocolError(msg)
+        if self._service_key.encode("ascii") in response.body:
+            msg = "The Router media response contains the service key."
+            raise RouterProtocolError(msg)
         return MediaContentResult(media_type, response.body)
 
-    def get_statistics(  # noqa: PLR0913 - Native filters are explicit.
+    def get_statistics(  # noqa: C901, PLR0913 - Native filters are explicit.
         self,
         from_time: str,
         to_time: str,
@@ -1201,40 +1330,73 @@ class RouterClient:
             if value is not None:
                 query.append((key, value))
         query.extend(("group_by", item.value) for item in group_by)
-        return _statistics(self._get("/v1/statistics", query))
+        result = _statistics(self._get("/v1/statistics", query))
+        if (
+            datetime.fromisoformat(result.from_time) != start
+            or datetime.fromisoformat(result.to_time) != end
+            or result.group_by != group_by
+        ):
+            msg = "The Router statistics result does not match its request."
+            raise RouterProtocolError(msg)
+        return result
 
-    def _get(self, path: str, query: Sequence[tuple[str, str]] = ()) -> JsonObject:
+    def _get(
+        self,
+        path: str,
+        query: Sequence[tuple[str, str]] = (),
+        *,
+        request_timeout: float | None = None,
+    ) -> JsonObject:
         url_path = path if not query else f"{path}?{urlencode(query)}"
-        return self._json("GET", url_path, None, uncertain=False)
+        return self._json(
+            "GET",
+            url_path,
+            None,
+            expected_status=200,
+            uncertain=False,
+            request_timeout=request_timeout,
+        )
 
     def _empty(self, method: str, path: str) -> None:
         response = self._request(method, path, None, uncertain=True)
         if not _HTTP_SUCCESS_MINIMUM <= response.status < _HTTP_SUCCESS_LIMIT:
             _require_json_media_type(response.headers)
-            raise _api_error(response.status, _json_object(response.body))
+            raise _api_error(
+                response.status,
+                _safe_json_object(response.body, self._service_key),
+            )
+        if response.status != _HTTP_NO_CONTENT:
+            msg = "The Router empty operation returned an unexpected success status."
+            raise RouterProtocolError(msg)
         if response.body:
             msg = "The Router returned a body for an empty response."
             raise RouterProtocolError(msg)
 
-    def _json(
+    def _json(  # noqa: PLR0913 - HTTP calls have fixed transport controls.
         self,
         method: str,
         path: str,
         body: JsonObject | None,
         *,
+        expected_status: int,
         uncertain: bool,
+        request_timeout: float | None = None,
     ) -> JsonObject:
         response = self._request(
             method,
             path,
             None if body is None else _request_json_bytes(body),
             uncertain=uncertain,
+            request_timeout=request_timeout,
         )
         _response_size(response.body, self._maximum_response_bytes)
         _require_json_media_type(response.headers)
-        value = _json_object(response.body)
+        value = _safe_json_object(response.body, self._service_key)
         if not _HTTP_SUCCESS_MINIMUM <= response.status < _HTTP_SUCCESS_LIMIT:
             raise _api_error(response.status, value)
+        if response.status != expected_status:
+            msg = "The Router JSON operation returned an unexpected success status."
+            raise RouterProtocolError(msg)
         return value
 
     def _request(
@@ -1244,21 +1406,33 @@ class RouterClient:
         body: bytes | None,
         *,
         uncertain: bool,
+        request_timeout: float | None = None,
     ) -> RouterTransportResponse:
+        self._validate_request_secrecy(path, body)
         headers = self._headers("application/json", has_body=body is not None)
         try:
             response = self._transport.request(
-                method, self._base_url + path, headers, body, self._timeout
+                method,
+                self._base_url + path,
+                headers,
+                body,
+                self._timeout if request_timeout is None else request_timeout,
             )
         except RouterError:
             raise
         except Exception:  # noqa: BLE001 - Custom transports can raise any error.
             raise RouterTransportError(uncertain_result=uncertain) from None
-        _validate_complete_response(response)
+        response = RouterTransportResponse(
+            response.status,
+            _validate_complete_response(response),
+            response.body,
+        )
+        self._validate_response_header_secrecy(response.headers)
         _response_size(response.body, self._maximum_response_bytes)
         return response
 
     def _stream_request(self, path: str, body: bytes) -> RouterStreamResponse:
+        self._validate_request_secrecy(path, body)
         try:
             response = self._transport.stream(
                 "POST",
@@ -1267,12 +1441,41 @@ class RouterClient:
                 body,
                 self._timeout,
             )
+        except RouterProtocolError as error:
+            error.phase = CallFailurePhase.UNCERTAIN
+            raise
         except RouterError:
             raise
         except Exception:  # noqa: BLE001 - Custom transports can raise any error.
             raise RouterTransportError(uncertain_result=True) from None
-        _validate_stream_response(response)
-        return response
+        try:
+            headers = _validate_stream_response(response)
+        except RouterProtocolError as error:
+            error.phase = CallFailurePhase.UNCERTAIN
+            raise
+        try:
+            self._validate_response_header_secrecy(headers)
+        except RouterProtocolError as error:
+            error.phase = CallFailurePhase.UNCERTAIN
+            raise
+        return RouterStreamResponse(response.status, headers, response.chunks)
+
+    def _validate_request_secrecy(self, path: str, body: bytes | None) -> None:
+        url = self._base_url + path
+        if self._service_key in url or self._service_key in unquote(url):
+            msg = "A Router request URL cannot contain the service key."
+            raise ValueError(msg)
+        if body is not None and _json_string_bytes(self._service_key) in body:
+            msg = "A Router request body cannot contain the service key."
+            raise ValueError(msg)
+
+    def _validate_response_header_secrecy(self, headers: Mapping[str, str]) -> None:
+        if any(
+            self._service_key in name or self._service_key in value
+            for name, value in headers.items()
+        ):
+            msg = "The Router response headers contain the service key."
+            raise RouterProtocolError(msg)
 
     def _headers(self, accept: str, *, has_body: bool) -> dict[str, str]:
         headers = {"Accept": accept, "Authorization": f"Bearer {self._service_key}"}
@@ -1287,7 +1490,12 @@ class RouterClient:
         max_pages: int,
         cursor: str | None,
     ) -> Iterator[_PageT]:
-        if max_pages <= 0:
+        raw_max_pages = cast("object", max_pages)
+        if (
+            isinstance(raw_max_pages, bool)
+            or not isinstance(raw_max_pages, int)
+            or raw_max_pages <= 0
+        ):
             msg = "The Router page limit must be positive."
             raise ValueError(msg)
         current = cursor
@@ -1349,18 +1557,32 @@ def _validated_stream_events(
     events: Iterator[ModelStreamEvent], call: ModelCall
 ) -> Iterator[ModelStreamEvent]:
     route: ExactModelSelector | None = None
-    for event in events:
-        if isinstance(event, ModelStreamStart):
-            route = event.route
-            _validate_result_route(call, route)
-        elif isinstance(event, ModelStreamCompleted) and event.route != route:
-            msg = "The Router completed a stream on a different route."
-            raise RouterProtocolError(msg)
-        yield event
+    visible = False
+    try:
+        for event in events:
+            if isinstance(event, ModelStreamStart):
+                route = event.route
+                _validate_result_route(call, route)
+            elif isinstance(event, (ModelStreamTextDelta, ModelStreamToolCall)):
+                visible = True
+            elif event.route != route:
+                msg = "The Router completed a stream on a different route."
+                raise RouterProtocolError(msg)  # noqa: TRY301
+            yield event
+    except RouterProtocolError as error:
+        if error.phase is None:
+            error.phase = (
+                CallFailurePhase.AFTER_VISIBLE_OUTPUT
+                if visible
+                else CallFailurePhase.UNCERTAIN
+            )
+        raise
 
 
 def _stream_events(  # noqa: C901, PLR0912, PLR0915 - Fixed SSE state branches.
     chunks: Iterable[bytes],
+    *,
+    service_key: str | None = None,
 ) -> Iterator[ModelStreamEvent]:
     buffer = b""
     started = False
@@ -1368,37 +1590,59 @@ def _stream_events(  # noqa: C901, PLR0912, PLR0915 - Fixed SSE state branches.
     terminal = False
     event_count = 0
     output_bytes = 0
+    response_bytes = 0
     try:
         for raw_chunk in cast("Iterable[object]", chunks):
             if not isinstance(raw_chunk, bytes):
                 msg = "The Router stream transport returned a non-byte chunk."
                 raise RouterProtocolError(msg)  # noqa: TRY301
-            if len(raw_chunk) > _MAXIMUM_EVENT_BYTES - len(buffer):
-                msg = "A Router stream event is too large."
+            response_bytes += len(raw_chunk)
+            if response_bytes > _MAXIMUM_STREAM_RESPONSE_BYTES:
+                msg = "The Router stream exceeds the wire byte limit."
                 raise RouterResponseLimitError(msg)  # noqa: TRY301
-            buffer += raw_chunk
-            while (framed := _next_sse_block(buffer)) is not None:
-                block, buffer = framed
-                if not block:
-                    continue
-                if terminal:
-                    msg = "The Router stream has data after its terminal event."
-                    raise RouterProtocolError(msg)  # noqa: TRY301
-                event_count += 1
-                _validate_stream_event_count(event_count)
-                event = _stream_event(block.replace(b"\r\n", b"\n"), started=started)
-                if isinstance(event, ModelStreamStart):
-                    started = True
-                elif isinstance(event, (ModelStreamTextDelta, ModelStreamToolCall)):
-                    visible = True
-                    output_bytes += _stream_output_bytes(event)
-                    _validate_stream_output_size(output_bytes)
-                else:
-                    terminal = True
-                yield event
-                if terminal and buffer.strip():
-                    msg = "The Router stream has data after its terminal event."
-                    raise RouterProtocolError(msg)  # noqa: TRY301
+            offset = 0
+            while offset < len(raw_chunk):
+                capacity = _MAXIMUM_EVENT_BYTES + 4 - len(buffer)
+                if capacity <= 0:
+                    msg = "A Router stream event is too large."
+                    raise RouterResponseLimitError(msg)  # noqa: TRY301
+                take = min(capacity, len(raw_chunk) - offset)
+                buffer += raw_chunk[offset : offset + take]
+                offset += take
+                while (framed := _next_sse_block(buffer)) is not None:
+                    block, buffer = framed
+                    if len(block) > _MAXIMUM_EVENT_BYTES:
+                        msg = "A Router stream event is too large."
+                        raise RouterResponseLimitError(msg)  # noqa: TRY301
+                    if not block:
+                        continue
+                    if terminal:
+                        msg = "The Router stream has data after its terminal event."
+                        raise RouterProtocolError(msg)  # noqa: TRY301
+                    event_count += 1
+                    _validate_stream_event_count(event_count)
+                    event = _stream_event(
+                        block.replace(b"\r\n", b"\n"),
+                        started=started,
+                        service_key=service_key,
+                    )
+                    if isinstance(event, ModelStreamStart):
+                        started = True
+                    elif isinstance(event, (ModelStreamTextDelta, ModelStreamToolCall)):
+                        visible = True
+                        output_bytes += _stream_output_bytes(event)
+                        _validate_stream_output_size(output_bytes)
+                    else:
+                        terminal = True
+                    yield event
+                    if terminal and buffer.strip():
+                        msg = "The Router stream has data after its terminal event."
+                        raise RouterProtocolError(msg)  # noqa: TRY301
+                if len(buffer) > _MAXIMUM_EVENT_BYTES and not _possible_sse_suffix(
+                    buffer[_MAXIMUM_EVENT_BYTES:]
+                ):
+                    msg = "A Router stream event is too large."
+                    raise RouterResponseLimitError(msg)  # noqa: TRY301
         if buffer.strip():
             msg = "The Router stream ended inside one event."
             raise RouterProtocolError(msg)  # noqa: TRY301
@@ -1407,6 +1651,13 @@ def _stream_events(  # noqa: C901, PLR0912, PLR0915 - Fixed SSE state branches.
             CallFailurePhase.AFTER_VISIBLE_OUTPUT
             if visible
             else CallFailurePhase.BEFORE_VISIBLE_OUTPUT
+        )
+        raise
+    except RouterProtocolError as error:
+        error.phase = (
+            CallFailurePhase.AFTER_VISIBLE_OUTPUT
+            if visible
+            else CallFailurePhase.UNCERTAIN
         )
         raise
     except RouterError:
@@ -1440,6 +1691,10 @@ def _next_sse_block(buffer: bytes) -> tuple[bytes, bytes] | None:
     return buffer[:position], buffer[end:]
 
 
+def _possible_sse_suffix(value: bytes) -> bool:
+    return any(separator.startswith(value) for separator in (b"\n\n", b"\r\n\r\n"))
+
+
 def _stream_output_bytes(
     event: ModelStreamTextDelta | ModelStreamToolCall,
 ) -> int:
@@ -1466,7 +1721,7 @@ def _validate_stream_output_size(size: int) -> None:
 
 
 def _stream_event(  # noqa: C901 - The native protocol has five event names.
-    block: bytes, *, started: bool
+    block: bytes, *, started: bool, service_key: str | None = None
 ) -> ModelStreamEvent:
     try:
         text = block.decode("utf-8")
@@ -1482,7 +1737,7 @@ def _stream_event(  # noqa: C901 - The native protocol has five event names.
         msg = "The Router stream event framing is invalid."
         raise RouterProtocolError(msg)
     name = lines[0][7:]
-    value = _json_object(lines[1][6:].encode())
+    value = _safe_json_object(lines[1][6:].encode(), service_key)
     if not started and name != "start":
         msg = "The Router stream does not start with a start event."
         raise RouterProtocolError(msg)
@@ -1618,9 +1873,9 @@ def _workspace(value: JsonObject) -> Workspace:
     )
 
 
-def _workspace_page(value: JsonObject) -> WorkspacePage:
+def _workspace_page(value: JsonObject, *, maximum_items: int) -> WorkspacePage:
     item = _closed(value, {"items", "page"})
-    items = _bounded_array(item["items"], "workspace items", _MAXIMUM_PAGE_SIZE)
+    items = _bounded_array(item["items"], "workspace items", maximum_items)
     return WorkspacePage(
         tuple(_workspace(_object(value)) for value in items),
         _page(_object(item["page"])),
@@ -1733,9 +1988,9 @@ def _assignment(value: JsonObject) -> Assignment:
     )
 
 
-def _assignment_page(value: JsonObject) -> AssignmentPage:
+def _assignment_page(value: JsonObject, *, maximum_items: int) -> AssignmentPage:
     item = _closed(value, {"items", "page"})
-    items = _bounded_array(item["items"], "assignment items", _MAXIMUM_PAGE_SIZE)
+    items = _bounded_array(item["items"], "assignment items", maximum_items)
     return AssignmentPage(
         tuple(_assignment(_object(value)) for value in items),
         _page(_object(item["page"])),
@@ -1752,9 +2007,9 @@ def _service_key(value: JsonObject) -> ServiceKey:
     )
 
 
-def _service_key_page(value: JsonObject) -> ServiceKeyPage:
+def _service_key_page(value: JsonObject, *, maximum_items: int) -> ServiceKeyPage:
     item = _closed(value, {"items", "page"})
-    items = _bounded_array(item["items"], "service key items", _MAXIMUM_PAGE_SIZE)
+    items = _bounded_array(item["items"], "service key items", maximum_items)
     return ServiceKeyPage(
         tuple(_service_key(_object(value)) for value in items),
         _page(_object(item["page"])),
@@ -1871,9 +2126,11 @@ def _provider_model(value: JsonObject) -> AvailableProviderModel:
     )
 
 
-def _provider_model_page(value: JsonObject) -> AvailableProviderModelPage:
+def _provider_model_page(
+    value: JsonObject, *, maximum_items: int
+) -> AvailableProviderModelPage:
     item = _closed(value, {"items", "page"})
-    items = _bounded_array(item["items"], "provider-model items", _MAXIMUM_PAGE_SIZE)
+    items = _bounded_array(item["items"], "provider-model items", maximum_items)
     return AvailableProviderModelPage(
         tuple(_provider_model(_object(value)) for value in items),
         _page(_object(item["page"])),
@@ -2095,8 +2352,25 @@ def _base_url(value: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}{path}"
 
 
+def _valid_service_key(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and _MINIMUM_SERVICE_KEY <= len(value) <= _MAXIMUM_SERVICE_KEY
+        and value.strip() == value
+        and all(
+            _PRINTABLE_ASCII_START <= ord(character) <= _PRINTABLE_ASCII_END
+            for character in value
+        )
+    )
+
+
 def _page_query(cursor: str | None, limit: int) -> list[tuple[str, str]]:
-    if not 1 <= limit <= _MAXIMUM_PAGE_SIZE:
+    raw_limit = cast("object", limit)
+    if (
+        isinstance(raw_limit, bool)
+        or not isinstance(raw_limit, int)
+        or not 1 <= raw_limit <= _MAXIMUM_PAGE_SIZE
+    ):
         msg = "The Router page size must be from 1 through 200."
         raise ValueError(msg)
     query = [("limit", str(limit))]
@@ -2187,14 +2461,14 @@ def _text(value: str, name: str, maximum: int) -> bytes:
 
 def _timestamp(value: str, name: str) -> datetime:
     _text(value, name, 100)
+    if _RFC3339_TIMESTAMP.fullmatch(value) is None:
+        msg = f"The {name} is not one valid RFC 3339 timestamp."
+        raise ValueError(msg)
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError:
         msg = f"The {name} is not one valid timestamp."
         raise ValueError(msg) from None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        msg = f"The {name} must include a time zone."
-        raise ValueError(msg)
     return parsed
 
 
@@ -2209,6 +2483,10 @@ def _json_bytes(value: JsonObject) -> bytes:
     except UnicodeEncodeError, ValueError, RecursionError:
         msg = "The Router request is not valid bounded JSON."
         raise ValueError(msg) from None
+
+
+def _json_string_bytes(value: str) -> bytes:
+    return json.dumps(value, ensure_ascii=False)[1:-1].encode("utf-8")
 
 
 def _request_json_bytes(value: JsonObject) -> bytes:
@@ -2238,6 +2516,30 @@ def _json_object(value: bytes) -> JsonObject:
     result = cast("JsonValue", parsed)
     _validate_json_unicode(result)
     return _object(result)
+
+
+def _safe_json_object(value: bytes, service_key: str | None) -> JsonObject:
+    result = _json_object(value)
+    if service_key is not None and _json_contains_string(result, service_key):
+        msg = "The Router JSON response contains the service key."
+        raise RouterProtocolError(msg)
+    return result
+
+
+def _json_contains_string(value: JsonValue, expected: str) -> bool:
+    pending: list[JsonValue] = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            if expected in item:
+                return True
+        elif isinstance(item, list):
+            pending.extend(item)
+        elif isinstance(item, dict):
+            if any(expected in key for key in item):
+                return True
+            pending.extend(item.values())
+    return False
 
 
 def _unique_json_object(pairs: list[tuple[str, JsonValue]]) -> JsonObject:
@@ -2397,8 +2699,12 @@ def _header(headers: Mapping[str, str], name: str) -> str:
     return ""
 
 
+def _header_media_type(headers: Mapping[str, str], name: str) -> str:
+    return _header(headers, name).split(";", 1)[0].strip().lower()
+
+
 def _require_json_media_type(headers: Mapping[str, str]) -> None:
-    media_type = _header(headers, "Content-Type").split(";", 1)[0].strip().lower()
+    media_type = _header_media_type(headers, "Content-Type")
     if media_type != "application/json":
         msg = "The Router JSON response media type is invalid."
         raise RouterProtocolError(msg)
@@ -2459,7 +2765,7 @@ def _validated_response_headers(headers: Mapping[str, str]) -> dict[str, str]:
         raise RouterProtocolError(msg) from None
 
 
-def _validate_complete_response(response: RouterTransportResponse) -> None:
+def _validate_complete_response(response: RouterTransportResponse) -> dict[str, str]:
     raw_status = cast("object", response.status)
     raw_body = cast("object", response.body)
     if (
@@ -2472,9 +2778,10 @@ def _validate_complete_response(response: RouterTransportResponse) -> None:
         raise RouterProtocolError(msg)
     headers = _validated_response_headers(response.headers)
     _validate_declared_length(headers, len(response.body))
+    return headers
 
 
-def _validate_stream_response(response: RouterStreamResponse) -> None:
+def _validate_stream_response(response: RouterStreamResponse) -> dict[str, str]:
     raw_status = cast("object", response.status)
     if (
         isinstance(raw_status, bool)
@@ -2483,7 +2790,7 @@ def _validate_stream_response(response: RouterStreamResponse) -> None:
     ):
         msg = "The Router transport returned an invalid stream response."
         raise RouterProtocolError(msg)
-    _validated_response_headers(response.headers)
+    return _validated_response_headers(response.headers)
 
 
 def _validate_declared_length(headers: Mapping[str, str], actual: int) -> None:

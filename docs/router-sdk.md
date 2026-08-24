@@ -44,6 +44,8 @@ only for an explicit loopback endpoint. Other endpoints must use HTTPS. The
 client does not follow redirects because a redirect could forward the service
 key to a different endpoint. It also ignores environment HTTP and HTTPS proxy
 settings so they cannot route the private key through an unconfigured proxy.
+The client rejects a URL, JSON request body, response header, JSON response, or
+raw media response that contains its bound service key.
 
 The client does not retry an accepted model, embedding, or media request. It
 returns `RouterTransportError` with an uncertain result after an applicable
@@ -54,8 +56,12 @@ was already visible.
 
 Successful complete responses have a caller-selected byte bound. Cursor page
 iteration and media polling also require caller-selected finite bounds. The
-client rejects response objects with missing, unknown, or invalid native
-fields.
+client requires the exact native success status and rejects response objects
+with missing, unknown, or invalid native fields.
+
+One HTTP request timeout must be greater than 0 and no more than 900 seconds.
+A media wait can be no more than 86400 seconds. Each polling request uses the
+smaller value of the HTTP timeout and the remaining media-wait time.
 
 The client applies the Router 70 MiB complete HTTP request-body limit after
 JSON, UTF-8, and Base64 encoding and before it calls the transport. It rejects
@@ -66,8 +72,9 @@ object keys and non-finite numbers. Every native HTTP error envelope must use
 the `application/json` media type before the client parses it.
 
 A model stream accepts no more than 100000 events and 10000000 bytes of
-provider-neutral output. One event accepts no more than 2 MiB. The parser
-accepts LF and CRLF framing, including CRLF that crosses transport chunks.
+provider-neutral output. One event accepts no more than 2 MiB, and the complete
+stream accepts no more than 128 MiB of wire data. The parser accepts LF and
+CRLF framing, including CRLF that crosses transport chunks.
 
 ## Example
 

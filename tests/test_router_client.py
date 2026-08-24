@@ -344,6 +344,8 @@ def private(name: str) -> PrivateFunction:
 
 def test_complete_native_service_key_contract_and_types() -> None:  # noqa: PLR0915
     """Each native service-key operation has a typed client method."""
+    direct_without_reasoning = assignment()
+    direct_without_reasoning.pop("reasoning_level")
     statistics = {
         "from": _TIME,
         "to": "2026-08-25T00:00:00Z",
@@ -368,7 +370,7 @@ def test_complete_native_service_key_contract_and_types() -> None:  # noqa: PLR0
             response(200, page([assignment()])),
             response(200, assignment("inherited_assignment")),
             response(200, assignment("inherited_assignment")),
-            response(200, assignment()),
+            response(200, direct_without_reasoning),
             response(204, b"", media_type=""),
             response(204, b"", media_type=""),
             response(200, page([service_key()])),
@@ -501,7 +503,7 @@ def test_complete_native_service_key_contract_and_types() -> None:  # noqa: PLR0
     )
     assert job.state is MediaJobState.SUCCEEDED
     assert subject.get_media_job("job-1").error is not None
-    assert subject.wait_media_job("job-1", timeout=0).content is not None
+    assert subject.wait_media_job("job-1", timeout=10).content is not None
     content = subject.get_media_job_content("job-1")
     assert (content.media_type, content.data) == ("image/png", b"png")
     result = subject.get_statistics(
@@ -794,7 +796,9 @@ def test_stream_disconnect_phase_uses_output_visibility() -> None:
     assert after_error.value.phase is CallFailurePhase.AFTER_VISIBLE_OUTPUT
 
 
-def test_bounded_pagination_and_media_polling() -> None:
+def test_bounded_pagination_and_media_polling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Caller-selected page and media polling bounds stop finite workflows."""
     transport = FakeRouterTransport(
         [
@@ -815,6 +819,59 @@ def test_bounded_pagination_and_media_polling() -> None:
         subject.wait_media_job("job-1", timeout=1, poll_interval=0.001).state
         is MediaJobState.SUCCEEDED
     )
+    assert all(call.timeout <= 1 for call in transport.calls[-3:])
+
+    ticks = iter((0.0, 0.1, 1.0))
+    router_time = cast("object", vars(router_client_module)["time"])
+    monkeypatch.setattr(router_time, "monotonic", lambda: next(ticks))
+    slow_transport = FakeRouterTransport([response(200, media_job("pending"))])
+    with pytest.raises(TimeoutError, match="wait timeout"):
+        client(slow_transport).wait_media_job("job-1", timeout=1, poll_interval=0.001)
+    assert slow_transport.calls[0].timeout == pytest.approx(0.9)
+
+
+def test_service_key_page_iteration_has_the_same_strict_bound() -> None:
+    """Service-key pagination stops at the caller-selected page count."""
+    transport = FakeRouterTransport(
+        [
+            response(200, page([service_key()], more=True)),
+            response(200, page([], more=False)),
+        ]
+    )
+
+    pages = tuple(client(transport).iter_service_key_pages(max_pages=2))
+
+    assert len(pages) == _EXPECTED_PAGE_COUNT
+    assert pages[0].items[0].name == "worker"
+
+
+_LIST_LIMIT_CASES: tuple[tuple[list[object], Callable[[RouterClient], object]], ...] = (
+    (
+        [workspace(), workspace("other")],
+        lambda subject: subject.list_workspaces(limit=1),
+    ),
+    (
+        [assignment(), assignment()],
+        lambda subject: subject.list_assignments(limit=1),
+    ),
+    (
+        [service_key(), service_key()],
+        lambda subject: subject.list_service_keys(limit=1),
+    ),
+    (
+        [provider_model(), provider_model()],
+        lambda subject: subject.list_provider_models(limit=1),
+    ),
+)
+
+
+@pytest.mark.parametrize(("items", "operation"), _LIST_LIMIT_CASES)
+def test_each_list_response_honors_the_requested_page_size(
+    items: list[object], operation: Callable[[RouterClient], object]
+) -> None:
+    """A response cannot exceed the smaller page size in its request."""
+    with pytest.raises(RouterProtocolError, match="item limit"):
+        operation(client(FakeRouterTransport([response(200, page(items))])))
 
 
 def test_removed_public_surfaces_are_not_added() -> None:
@@ -850,10 +907,16 @@ def test_public_exports_include_complete_typed_sdk() -> None:
         {"base_url": "http://localhost:", "service_key": _SERVICE_KEY},
         {"base_url": "http://localhost:bad", "service_key": _SERVICE_KEY},
         {"base_url": "http://localhost", "service_key": ""},
+        {"base_url": "http://localhost", "service_key": "x" * 31},
         {"base_url": "http://localhost", "service_key": " key"},
         {"base_url": "http://localhost", "service_key": "é"},
         {"base_url": "http://localhost", "service_key": "x" * 501},
         {"base_url": "http://localhost", "service_key": _SERVICE_KEY, "timeout": 0},
+        {
+            "base_url": "http://localhost",
+            "service_key": _SERVICE_KEY,
+            "timeout": 901,
+        },
         {"base_url": "http://localhost", "service_key": _SERVICE_KEY, "timeout": True},
         {"base_url": "http://localhost", "service_key": _SERVICE_KEY, "timeout": "1"},
         {
@@ -879,7 +942,7 @@ def test_client_connection_configuration_is_strict(kwargs: dict[str, object]) ->
         RouterClient(**kwargs)  # type: ignore[arg-type]
 
 
-def test_public_request_bounds_reject_invalid_values() -> None:
+def test_public_request_bounds_reject_invalid_values() -> None:  # noqa: PLR0915
     """Each public SDK request applies the native finite input bounds."""
     subject = client(FakeRouterTransport())
     assignment_operations: tuple[Callable[[], object], ...] = (
@@ -902,9 +965,17 @@ def test_public_request_bounds_reject_invalid_values() -> None:
     with pytest.raises(ValueError, match=r".+"):
         subject.list_workspaces(limit=0)
     with pytest.raises(ValueError, match=r".+"):
+        subject.list_workspaces(limit=True)
+    with pytest.raises(ValueError, match=r".+"):
+        subject.list_workspaces(limit=cast("int", 1.5))
+    with pytest.raises(ValueError, match=r".+"):
         subject.list_workspaces(cursor="")
     with pytest.raises(ValueError, match=r".+"):
         tuple(subject.iter_provider_model_pages(max_pages=0))
+    with pytest.raises(ValueError, match=r".+"):
+        tuple(subject.iter_provider_model_pages(max_pages=True))
+    with pytest.raises(ValueError, match=r".+"):
+        tuple(subject.iter_provider_model_pages(max_pages=cast("int", 1.5)))
     with pytest.raises(ValueError, match=r".+"):
         subject.create_embedding("main", AssignmentSelector("a"), ())
     with pytest.raises(ValueError, match=r".+"):
@@ -944,6 +1015,8 @@ def test_public_request_bounds_reject_invalid_values() -> None:
     with pytest.raises(ValueError, match=r".+"):
         subject.wait_media_job("job", timeout=-1)
     with pytest.raises(ValueError, match=r".+"):
+        subject.wait_media_job("job", timeout=86_401)
+    with pytest.raises(ValueError, match=r".+"):
         subject.wait_media_job("job", timeout=1, poll_interval=0)
     for invalid_timeout in (True, "1"):
         with pytest.raises(ValueError, match=r".+"):
@@ -955,7 +1028,7 @@ def test_public_request_bounds_reject_invalid_values() -> None:
             )
     timeout_transport = FakeRouterTransport([response(200, media_job("running"))])
     with pytest.raises(TimeoutError):
-        client(timeout_transport).wait_media_job("job", timeout=0)
+        client(timeout_transport).wait_media_job("job-1", timeout=0)
     with pytest.raises(ValueError, match=r".+"):
         subject.get_statistics(
             _TIME, _NEXT_TIME, group_by=(StatisticsDimension.TAG,) * 2
@@ -963,7 +1036,9 @@ def test_public_request_bounds_reject_invalid_values() -> None:
 
     invalid_statistics: tuple[tuple[str, str, dict[str, str]], ...] = (
         ("invalid", _NEXT_TIME, {}),
+        ("2026-02-30T00:00:00Z", _NEXT_TIME, {}),
         ("2026-08-24T00:00:00", _NEXT_TIME, {}),
+        ("2026-08-24 00:00:00Z", _NEXT_TIME, {}),
         (_TIME, "2028-08-25T00:00:00Z", {}),
         (_NEXT_TIME, _TIME, {}),
         (_TIME, _NEXT_TIME, {"workspace": "Bad"}),
@@ -1072,23 +1147,25 @@ def test_direct_model_and_stream_routes_must_match_the_call() -> None:
         ("start", {"provider_model_api_name": "route-b"}),
         ("completed", {"provider_model_api_name": "route-b", "usage": usage()}),
     )
-    with pytest.raises(RouterProtocolError, match="exact"):
+    with pytest.raises(RouterProtocolError, match="exact") as wrong_start_error:
         tuple(
             client(FakeRouterTransport(streams=[wrong_start])).stream_model(
                 model_call()
             )
         )
+    assert wrong_start_error.value.phase is CallFailurePhase.UNCERTAIN
 
     changed_completion = stream(
         ("start", {"provider_model_api_name": "route-a"}),
         ("completed", {"provider_model_api_name": "route-b", "usage": usage()}),
     )
-    with pytest.raises(RouterProtocolError, match="different"):
+    with pytest.raises(RouterProtocolError, match="different") as completion_error:
         tuple(
             client(FakeRouterTransport(streams=[changed_completion])).stream_model(
                 model_call()
             )
         )
+    assert completion_error.value.phase is CallFailurePhase.UNCERTAIN
 
     embedding_value = {
         "provider_model_api_name": "route-b",
@@ -1230,6 +1307,20 @@ def test_stream_accepts_split_crlf_and_bounds_total_events_and_output(
     )
     assert isinstance(events[-1], ModelStreamCompleted)
 
+    delta_event = b'event: text_delta\ndata: {"delta":"' + (b"x" * 160) + b'"}\n\n'
+    large_chunk = (
+        start.replace(b"\r\n", b"\n")
+        + delta_event * 12_000
+        + completed.replace(b"\r\n", b"\n")
+    )
+    large_response = RouterStreamResponse(
+        200, {"Content-Type": "text/event-stream"}, (large_chunk,)
+    )
+    large_events = tuple(
+        client(FakeRouterTransport(streams=[large_response])).stream_model(model_call())
+    )
+    assert isinstance(large_events[-1], ModelStreamCompleted)
+
     private("_validate_stream_event_count")(100_000)
     with pytest.raises(RouterResponseLimitError, match="many events"):
         private("_validate_stream_event_count")(100_001)
@@ -1253,6 +1344,10 @@ def test_stream_accepts_split_crlf_and_bounds_total_events_and_output(
     with pytest.raises(RouterResponseLimitError, match="output"):
         for _event in cast("Iterable[object]", private("_stream_events")((output,))):
             pass
+
+    monkeypatch.setattr(router_client_module, "_MAXIMUM_STREAM_RESPONSE_BYTES", 10)
+    with pytest.raises(RouterResponseLimitError, match="wire byte"):
+        tuple(cast("Iterable[object]", private("_stream_events")((b"\n\n" * 6,))))
 
 
 def test_request_json_enforces_exact_router_http_body_limit_before_transport() -> None:
@@ -1278,6 +1373,225 @@ def test_request_json_enforces_exact_router_http_body_limit_before_transport() -
             ),
         )
     assert transport.calls == []
+
+
+_EXACT_STATUS_CASES: tuple[
+    tuple[RouterTransportResponse, Callable[[RouterClient], object]], ...
+] = (
+    (
+        response(200, workspace()),
+        lambda subject: subject.create_workspace("main", "Main"),
+    ),
+    (
+        response(201, page([])),
+        lambda subject: subject.list_workspaces(),
+    ),
+    (
+        response(200, media_job()),
+        lambda subject: subject.create_media_job(
+            "main", ExactModelSelector("route-a"), MediaKind.IMAGE, "Draw."
+        ),
+    ),
+    (
+        response(200, b"", media_type=""),
+        lambda subject: subject.delete_workspace("main"),
+    ),
+    (
+        response(201, b"media", media_type="image/png"),
+        lambda subject: subject.get_media_job_content("job-1"),
+    ),
+)
+
+
+@pytest.mark.parametrize(("response_value", "operation"), _EXACT_STATUS_CASES)
+def test_operations_require_the_exact_native_success_status(
+    response_value: RouterTransportResponse,
+    operation: Callable[[RouterClient], object],
+) -> None:
+    """A different 2xx status cannot select a different response contract."""
+    with pytest.raises(RouterProtocolError, match="success status"):
+        operation(client(FakeRouterTransport([response_value])))
+
+    wrong_stream = RouterStreamResponse(
+        201,
+        {"Content-Type": "text/event-stream"},
+        (),
+    )
+    with pytest.raises(RouterProtocolError, match="success status"):
+        tuple(
+            client(FakeRouterTransport(streams=[wrong_stream])).stream_model(
+                model_call()
+            )
+        )
+
+
+def test_model_result_type_matches_the_requested_output_format() -> None:
+    """Text and structured calls reject a response from the other union branch."""
+    standard = {
+        "output_type": "standard",
+        "provider_model_api_name": "route-a",
+        "content": [{"type": "text", "text": "Done."}],
+        "usage": usage(),
+    }
+    structured = {
+        "output_type": "structured_json",
+        "provider_model_api_name": "route-a",
+        "structured_output_json": "{}",
+        "usage": usage(),
+    }
+    cases = (
+        (model_call(), structured),
+        (model_call(structured=True), standard),
+    )
+    for call, value in cases:
+        with pytest.raises(RouterProtocolError, match="output format"):
+            client(FakeRouterTransport([response(200, value)])).model_call(call)
+
+
+def test_resource_results_match_the_request_identity_and_shape() -> None:
+    """A valid response schema cannot return a different requested resource."""
+    wrong_workspace = workspace("other")
+    wrong_assignment = assignment("inherited_assignment")
+    wrong_assignment["api_name"] = "other"
+    wrong_key = service_key(include_last_used=False)
+    wrong_key["name"] = "other"
+    wrong_job = media_job()
+    wrong_job["id"] = "other"
+    wrong_statistics: dict[str, object] = {
+        "from": _NEXT_TIME,
+        "to": "2026-08-26T00:00:00Z",
+        "group_by": [],
+        "buckets": [],
+    }
+    cases: tuple[
+        tuple[RouterTransportResponse, Callable[[RouterClient], object]], ...
+    ] = (
+        (
+            response(201, wrong_workspace),
+            lambda subject: subject.create_workspace("main", "Main"),
+        ),
+        (
+            response(200, wrong_workspace),
+            lambda subject: subject.get_workspace("main"),
+        ),
+        (
+            response(200, wrong_assignment),
+            lambda subject: subject.get_assignment("workflow"),
+        ),
+        (
+            response(200, wrong_assignment),
+            lambda subject: subject.put_assignment(
+                "workflow", inherits_assignment_api_name="default"
+            ),
+        ),
+        (
+            response(201, {"key": wrong_key, "secret": "s" * 32}),
+            lambda subject: subject.create_service_key("worker"),
+        ),
+        (
+            response(200, wrong_job),
+            lambda subject: subject.get_media_job("job-1"),
+        ),
+        (
+            response(200, wrong_statistics),
+            lambda subject: subject.get_statistics(_TIME, _NEXT_TIME),
+        ),
+    )
+    for response_value, operation in cases:
+        with pytest.raises(RouterProtocolError, match="match"):
+            operation(client(FakeRouterTransport([response_value])))
+
+
+def test_service_key_stays_out_of_urls_bodies_and_response_errors() -> None:
+    """The bound credential occurs only in the transport Authorization header."""
+    subject = client(FakeRouterTransport())
+    with pytest.raises(ValueError, match="URL"):
+        subject.get_media_job(_SERVICE_KEY)
+    with pytest.raises(ValueError, match="body"):
+        subject.create_workspace("main", _SERVICE_KEY)
+    with pytest.raises(ValueError, match="URL"):
+        RouterClient(
+            base_url=f"https://router.invalid/{_SERVICE_KEY}",
+            service_key=_SERVICE_KEY,
+            transport=FakeRouterTransport(),
+        )
+    encoded_key = "%74" + _SERVICE_KEY[1:]
+    with pytest.raises(ValueError, match="URL"):
+        RouterClient(
+            base_url=f"https://router.invalid/{encoded_key}",
+            service_key=_SERVICE_KEY,
+            transport=FakeRouterTransport(),
+        )
+
+    unsafe_error = response(
+        400,
+        {
+            "error": {
+                "code": "invalid_request",
+                "message": f"Unsafe {_SERVICE_KEY}",
+            }
+        },
+    )
+    with pytest.raises(RouterProtocolError) as captured:
+        client(FakeRouterTransport([unsafe_error])).get_workspace("main")
+    assert _SERVICE_KEY not in str(captured.value)
+
+    unsafe_json_key = response(200, {_SERVICE_KEY: page([])})
+    with pytest.raises(RouterProtocolError) as json_key_error:
+        client(FakeRouterTransport([unsafe_json_key])).list_workspaces()
+    assert _SERVICE_KEY not in str(json_key_error.value)
+
+    unsafe_headers = RouterTransportResponse(
+        200,
+        {"Content-Type": "application/json", "X-Unsafe": _SERVICE_KEY},
+        json.dumps(page([])).encode(),
+    )
+    with pytest.raises(RouterProtocolError) as header_error:
+        client(FakeRouterTransport([unsafe_headers])).list_workspaces()
+    assert _SERVICE_KEY not in str(header_error.value)
+
+    unsafe_stream = stream(
+        ("start", {"provider_model_api_name": "route-a"}),
+        (
+            "error",
+            {
+                "error": {
+                    "code": "upstream_failed",
+                    "message": f"Unsafe {_SERVICE_KEY}",
+                }
+            },
+        ),
+    )
+    with pytest.raises(RouterProtocolError) as stream_error:
+        tuple(
+            client(FakeRouterTransport(streams=[unsafe_stream])).stream_model(
+                model_call()
+            )
+        )
+    assert _SERVICE_KEY not in str(stream_error.value)
+
+    unsafe_stream_header = RouterStreamResponse(
+        200,
+        {"Content-Type": "text/event-stream", "X-Unsafe": _SERVICE_KEY},
+        (),
+    )
+    with pytest.raises(RouterProtocolError) as stream_header_error:
+        tuple(
+            client(FakeRouterTransport(streams=[unsafe_stream_header])).stream_model(
+                model_call()
+            )
+        )
+    assert stream_header_error.value.phase is CallFailurePhase.UNCERTAIN
+    assert _SERVICE_KEY not in str(stream_header_error.value)
+
+    unsafe_media = RouterTransportResponse(
+        200,
+        {"Content-Type": "application/octet-stream"},
+        f"prefix-{_SERVICE_KEY}-suffix".encode(),
+    )
+    with pytest.raises(RouterProtocolError) as media_error:
+        client(FakeRouterTransport([unsafe_media])).get_media_job_content("job-1")
+    assert _SERVICE_KEY not in str(media_error.value)
 
 
 def test_response_status_media_type_body_and_size_failures() -> None:
@@ -1342,6 +1656,17 @@ def test_response_status_media_type_body_and_size_failures() -> None:
             )
         )
 
+    malformed_stream_error = RouterStreamResponse(
+        400, {"Content-Type": "text/plain"}, (b"invalid",)
+    )
+    with pytest.raises(RouterProtocolError) as malformed_error:
+        tuple(
+            client(FakeRouterTransport(streams=[malformed_stream_error])).stream_model(
+                model_call()
+            )
+        )
+    assert malformed_error.value.phase is CallFailurePhase.UNCERTAIN
+
     oversized_error = RouterStreamResponse(
         400,
         {"Content-Type": "application/json"},
@@ -1378,6 +1703,18 @@ def test_response_status_media_type_body_and_size_failures() -> None:
             )
         )
     assert "unsafe transport detail" not in str(unsafe_error.value)
+
+    safe_error_chunks = RouterStreamResponse(
+        400,
+        {"Content-Type": "application/json"},
+        SafeRouterErrorChunks(),
+    )
+    with pytest.raises(RouterPageLimitError, match="safe iterator"):
+        tuple(
+            client(FakeRouterTransport(streams=[safe_error_chunks])).stream_model(
+                model_call()
+            )
+        )
 
     short_secret = client(
         FakeRouterTransport(
@@ -1425,17 +1762,8 @@ def test_every_native_error_envelope_requires_json_media_type() -> None:
             operation()
 
 
-def test_oversized_stream_chunks_fail_before_buffer_growth(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """One oversized custom chunk fails before parsing or body extension."""
-
-    def unexpected_parse(buffer: bytes) -> tuple[bytes, bytes] | None:
-        del buffer
-        msg = "The oversized chunk reached the parser."
-        raise AssertionError(msg)
-
-    monkeypatch.setattr(router_client_module, "_next_sse_block", unexpected_parse)
+def test_oversized_stream_event_and_error_body_fail_at_their_bounds() -> None:
+    """An unfinished oversized event and an error body have finite bounds."""
     with pytest.raises(RouterResponseLimitError, match="event"):
         tuple(
             cast(
@@ -1443,8 +1771,40 @@ def test_oversized_stream_chunks_fail_before_buffer_growth(
                 private("_stream_events")((b"x" * (2 * 1024 * 1024 + 1),)),
             )
         )
+    with pytest.raises(RouterResponseLimitError, match="event"):
+        tuple(
+            cast(
+                "Iterable[object]",
+                private("_stream_events")((b"x" * (2 * 1024 * 1024 + 5),)),
+            )
+        )
     with pytest.raises(RouterResponseLimitError, match="configured byte limit"):
         private("_bounded_stream_body")((b"xx",), 1)
+
+
+@pytest.mark.parametrize("chunks", [(b"x" * 13,), (b"x" * 12, b"x")])
+def test_full_stream_buffer_fails_without_a_zero_progress_loop(
+    chunks: tuple[bytes, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One full buffer fails before a single-chunk or split-chunk retry."""
+    parser_calls = 0
+
+    def no_frame(_buffer: bytes) -> None:
+        nonlocal parser_calls
+        parser_calls += 1
+        if parser_calls > 1:
+            pytest.fail("The stream parser retried without progress.")
+
+    def possible_suffix(_value: bytes) -> bool:
+        return True
+
+    monkeypatch.setattr(router_client_module, "_MAXIMUM_EVENT_BYTES", 8)
+    monkeypatch.setattr(router_client_module, "_next_sse_block", no_frame)
+    monkeypatch.setattr(router_client_module, "_possible_sse_suffix", possible_suffix)
+
+    with pytest.raises(RouterResponseLimitError, match="event"):
+        tuple(cast("Iterable[object]", private("_stream_events")(chunks)))
+    assert parser_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -1530,8 +1890,24 @@ def test_custom_transport_response_shape_and_stream_headers_are_validated() -> N
             msg = "safe protocol failure"
             raise RouterProtocolError(msg)
 
+    class RouterErrorStreamTransport(FakeRouterTransport):
+        def stream(
+            self,
+            method: str,
+            url: str,
+            headers: Mapping[str, str],
+            body: bytes,
+            timeout: float,
+        ) -> RouterStreamResponse:
+            """Raise one already safe non-protocol SDK error."""
+            del method, url, headers, body, timeout
+            msg = "safe Router failure"
+            raise RouterPageLimitError(msg)
+
     with pytest.raises(RouterProtocolError, match="safe protocol"):
         tuple(client(ProtocolStreamTransport()).stream_model(model_call()))
+    with pytest.raises(RouterPageLimitError, match="safe Router"):
+        tuple(client(RouterErrorStreamTransport()).stream_model(model_call()))
 
 
 class BrokenChunks:
@@ -1546,6 +1922,19 @@ class BrokenChunks:
         yield self.first
         msg = "unsafe transport detail"
         raise OSError(msg)
+
+
+class SafeRouterErrorChunks:
+    """Raise one safe SDK error from a custom chunk iterator."""
+
+    def __iter__(self) -> SafeRouterErrorChunks:
+        """Return this iterator."""
+        return self
+
+    def __next__(self) -> bytes:
+        """Raise the safe error."""
+        msg = "safe iterator failure"
+        raise RouterPageLimitError(msg)
 
 
 @pytest.mark.parametrize(
@@ -1611,6 +2000,14 @@ def test_stream_transport_loss_preserves_visibility_phase() -> None:
             )
         )
     assert captured.value.phase is CallFailurePhase.AFTER_VISIBLE_OUTPUT
+
+    with pytest.raises(RouterPageLimitError, match="safe iterator"):
+        tuple(
+            cast(
+                "Iterable[object]",
+                private("_stream_events")(SafeRouterErrorChunks()),
+            )
+        )
 
 
 @pytest.mark.parametrize(
