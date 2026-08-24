@@ -11,7 +11,8 @@ is not an open-source release.
 The package supplies dependency-free OpenID Connect authorization request
 primitives. It validates canonical 256-bit Base64URL tokens, creates RFC 7636
 S256 challenges, and builds bounded authorization-code URLs without letting an
-endpoint replace request-owned parameters.
+endpoint replace request-owned parameters. A caller can omit refresh-token
+access when it needs only an OpenID identity token.
 
 The package also supplies the official dependency-free Python Router client,
 provider-neutral Router model contract values, and a stateless multi-turn

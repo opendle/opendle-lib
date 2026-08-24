@@ -95,6 +95,20 @@ def test_authorization_url_supports_loopback_without_optional_controls() -> None
     assert "prompt" not in query
 
 
+def test_authorization_url_can_omit_refresh_token_access() -> None:
+    """A caller that does not use refresh tokens can request only OpenID."""
+    result = build_authorization_code_url(
+        authorization_endpoint="https://auth.example.test/authorize",
+        client_id="client-one",
+        redirect_uri="https://service.example.test/oidc/callback",
+        state=_STATE,
+        nonce=_NONCE,
+        code_verifier=_VERIFIER,
+        include_offline_access=False,
+    )
+    assert parse_qs(urlsplit(result).query)["scope"] == ["openid"]
+
+
 @pytest.mark.parametrize("parameter", ["state", "prompt", "redirect_uri"])
 def test_authorization_url_rejects_reserved_endpoint_parameters(
     parameter: str,

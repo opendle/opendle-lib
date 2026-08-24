@@ -88,6 +88,7 @@ def build_authorization_code_url(  # noqa: PLR0913 - The OIDC request has fixed 
     code_verifier: str,
     max_age_zero: bool = False,
     prompt_login: bool = False,
+    include_offline_access: bool = True,
 ) -> str:
     """Build an exact OIDC authorization-code URL with S256 PKCE.
 
@@ -104,6 +105,7 @@ def build_authorization_code_url(  # noqa: PLR0913 - The OIDC request has fixed 
         code_verifier: One canonical 256-bit PKCE verifier.
         max_age_zero: Add ``max_age=0`` when true.
         prompt_login: Add ``prompt=login`` when true.
+        include_offline_access: Request refresh-token access when true.
 
     Returns:
         The complete authorization URL.
@@ -129,7 +131,7 @@ def build_authorization_code_url(  # noqa: PLR0913 - The OIDC request has fixed 
         ("response_type", "code"),
         ("client_id", client_id),
         ("redirect_uri", redirect_uri),
-        ("scope", "openid offline_access"),
+        ("scope", "openid offline_access" if include_offline_access else "openid"),
         ("state", state),
         ("nonce", nonce),
         ("code_challenge", challenge),
