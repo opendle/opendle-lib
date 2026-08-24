@@ -1,7 +1,9 @@
 """Tests for provider-neutral Router contract values."""
 
 import json
+import math
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
@@ -15,6 +17,7 @@ from opendle import (
     ModelCallError,
     ModelCallResult,
     RouterContractError,
+    StructuredModelCallResult,
     SystemMessage,
     TextInputPart,
     TextOutputPart,
@@ -250,3 +253,37 @@ def test_json_and_error_text_validation_is_bounded() -> None:
         ModelCallError("", "message", phase=CallFailurePhase.BEFORE_VISIBLE_OUTPUT)
     with pytest.raises(RouterContractError, match="error message"):
         ModelCallError("code", "", phase=CallFailurePhase.BEFORE_VISIBLE_OUTPUT)
+
+
+def test_model_output_controls_and_structured_results_are_bounded() -> None:
+    """Native output controls and structured responses use closed finite values."""
+    call = ModelCall(
+        "workspace",
+        AssignmentSelector("main"),
+        (SystemMessage("system"),),
+        output_schema_json='{"type":"object"}',
+        output_limit=1_000_000,
+        temperature=2,
+    )
+    assert call.output_schema_json == '{"type":"object"}'
+    result = StructuredModelCallResult(
+        ExactModelSelector("route"),
+        "{}",
+        Usage((), "0", "EUR"),
+    )
+    assert result.structured_output_json == "{}"
+
+    with pytest.raises(RouterContractError, match="JSON Schema"):
+        replace(call, output_schema_json="[]")
+    with pytest.raises(RouterContractError, match="output limit"):
+        replace(call, output_limit=0)
+    for invalid_limit in (True, 1.5, "1"):
+        with pytest.raises(RouterContractError, match="output limit"):
+            replace(call, output_limit=cast("int", invalid_limit))
+    with pytest.raises(RouterContractError, match="temperature"):
+        replace(call, temperature=3)
+    for invalid_temperature in (True, "1", math.nan, math.inf, -math.inf):
+        with pytest.raises(RouterContractError, match="temperature"):
+            replace(call, temperature=cast("float", invalid_temperature))
+    with pytest.raises(RouterContractError, match="structured"):
+        replace(result, structured_output_json="not-json")

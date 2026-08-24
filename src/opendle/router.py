@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 __all__ = [
     "AssignmentSelector",
@@ -21,6 +22,7 @@ __all__ = [
     "ModelMessage",
     "ModelSelector",
     "RouterContractError",
+    "StructuredModelCallResult",
     "SystemMessage",
     "TextInputPart",
     "TextOutputPart",
@@ -50,6 +52,8 @@ _MAXIMUM_TAGS = 32
 _MAXIMUM_TOOLS = 128
 _MAXIMUM_TAG_BYTES = 128
 _MAXIMUM_TAG_SET_BYTES = 2_048
+_MAXIMUM_OUTPUT_LIMIT = 1_000_000
+_MAXIMUM_TEMPERATURE = 2
 
 
 class RouterContractError(ValueError):
@@ -328,8 +332,11 @@ class ModelCall:
     tools: tuple[ToolDefinition, ...] = ()
     tags: tuple[str, ...] = ()
     excluded_routes: tuple[ExactModelSelector, ...] = ()
+    output_schema_json: str | None = None
+    output_limit: int | None = None
+    temperature: float | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901 - One call has fixed bounds.
         """Validate model call bounds and normalized tags."""
         _validate_api_name(self.workspace_api_name, "workspace")
         if not 1 <= len(self.messages) <= _MAXIMUM_MESSAGES:
@@ -357,6 +364,32 @@ class ModelCall:
         if self.tags != normalize_tags(self.tags):
             msg = "Model call tags must be normalized."
             raise RouterContractError(msg)
+        if self.output_schema_json is not None:
+            schema = _json_text(
+                self.output_schema_json,
+                name="output JSON Schema",
+                maximum=_MAXIMUM_TOOL_SCHEMA,
+            )
+            if not isinstance(schema, dict):
+                msg = "The output JSON Schema must be one JSON object."
+                raise RouterContractError(msg)
+        raw_output_limit = cast("object", self.output_limit)
+        if raw_output_limit is not None and (
+            isinstance(raw_output_limit, bool)
+            or not isinstance(raw_output_limit, int)
+            or not 1 <= raw_output_limit <= _MAXIMUM_OUTPUT_LIMIT
+        ):
+            msg = "The model output limit is invalid."
+            raise RouterContractError(msg)
+        raw_temperature = cast("object", self.temperature)
+        if raw_temperature is not None and (
+            isinstance(raw_temperature, bool)
+            or not isinstance(raw_temperature, (int, float))
+            or not math.isfinite(raw_temperature)
+            or not 0 <= raw_temperature <= _MAXIMUM_TEMPERATURE
+        ):
+            msg = "The model temperature is invalid."
+            raise RouterContractError(msg)
         _validate_excluded_routes(self.selector, self.excluded_routes)
         if _model_call_bytes(self) > _MAXIMUM_MODEL_CALL_JSON_BYTES:
             msg = "The model call JSON body is too large."
@@ -374,6 +407,23 @@ class ModelCallResult:
     def __post_init__(self) -> None:
         """Require one or more result content parts."""
         AssistantMessage(self.content)
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredModelCallResult:
+    """Contain one successful structured model result and its exact route."""
+
+    route: ExactModelSelector
+    structured_output_json: str
+    usage: Usage
+
+    def __post_init__(self) -> None:
+        """Require one bounded valid JSON result."""
+        _json_text(
+            self.structured_output_json,
+            name="structured model output",
+            maximum=_MAXIMUM_JSON_TEXT,
+        )
 
 
 class ModelCaller(Protocol):
@@ -415,6 +465,13 @@ def message_bytes(messages: tuple[ModelMessage, ...]) -> int:
 
 
 def _model_call_bytes(call: ModelCall) -> int:
+    value = _model_call_value(call)
+    return len(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _model_call_value(call: ModelCall) -> dict[str, object]:
     value: dict[str, object] = {
         "workspace_api_name": call.workspace_api_name,
         "selector": _selector_value(call.selector),
@@ -435,9 +492,16 @@ def _model_call_bytes(call: ModelCall) -> int:
         value["excluded_provider_model_api_names"] = [
             route.provider_model_api_name for route in call.excluded_routes
         ]
-    return len(
-        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    )
+    if call.output_schema_json is not None:
+        value["output_format"] = {
+            "type": "json_schema",
+            "schema_json": call.output_schema_json,
+        }
+    if call.output_limit is not None:
+        value["output_limit"] = call.output_limit
+    if call.temperature is not None:
+        value["temperature"] = call.temperature
+    return value
 
 
 def _selector_value(selector: ModelSelector) -> dict[str, str]:

@@ -13,11 +13,14 @@ primitives. It validates canonical 256-bit Base64URL tokens, creates RFC 7636
 S256 challenges, and builds bounded authorization-code URLs without letting an
 endpoint replace request-owned parameters.
 
-The package also supplies provider-neutral Router model contract values and a
-stateless multi-turn harness. The harness uses caller-owned conversation state,
-tools, storage callbacks, and transport ports. It supports exact sticky routes,
-bounded pruning, and pinned model compaction. It does not execute in Router and
-does not own durable storage. See `docs/router-harness.md` for the public API.
+The package also supplies the official dependency-free Python Router client,
+provider-neutral Router model contract values, and a stateless multi-turn
+harness. One client binds one private backend service key to the complete
+native service-key API surface. The harness uses caller-owned conversation
+state, tools, storage callbacks, and the client model-caller port. It supports
+exact sticky routes, bounded pruning, and pinned model compaction. It does not
+execute in Router and does not own durable storage. See `docs/router-sdk.md`
+and `docs/router-harness.md` for the public APIs.
 
 The package supplies a dependency-free dynamic Ontology client. One client
 binds one service API name and one backend-only service key. It has one method
@@ -114,6 +117,7 @@ Use `uv` for dependency changes, commands, builds, and tools. Do not use
 - `tests/`: package and behavior tests
 - `docs/architecture.md`: package boundaries and evolution rules
 - `docs/router-harness.md`: Router contract and harness public API
+- `docs/router-sdk.md`: official native Router Python client API
 - `docs/shared-library-roadmap.md`: planned reusable backend capabilities
 - `docs/decisions/`: accepted architecture decisions
 - `scripts/`: deterministic repository checks

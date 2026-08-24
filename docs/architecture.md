@@ -35,9 +35,23 @@ validation, local sessions, grants, routes, and deployment configuration.
 
 The public `opendle.router` module contains provider-neutral model messages,
 tool parts, selectors, usage values, model call results, and the model caller
-protocol. It has no HTTP client. A later transport adapter can map these values
-to the native Router API. An exact provider-model selector identifies one
-configured provider connection and wire model.
+protocol. An exact provider-model selector identifies one configured provider
+connection and wire model.
+
+The public `opendle.router_client` module contains the dependency-free official
+Python client for the native Router API. One client binds one private backend
+service key to the Router base URL. It covers workspaces, assignments, service
+keys, provider-model discovery, synchronous and streamed model calls,
+embeddings, media jobs and content, and statistics. It does not expose global
+administrator, provider-specific, compatibility, model-call recovery, or
+hosted-agent operations.
+
+The client sends the service key only in the `Authorization` header. Its
+representations and client-created errors do not contain the key. It does not
+follow redirects or retry accepted model, embedding, or media requests. A
+transport loss after provider work can start has an uncertain result. The
+client applies caller-selected response and pagination bounds. It parses the
+closed native JSON and server-sent event contracts into typed values.
 
 The public `opendle.harness` module contains the stateless multi-turn loop. It
 accepts immutable caller-owned state and returns new state. The caller owns the
@@ -46,7 +60,8 @@ links. The module has no consumer import and no framework or data-store
 dependency. Its in-memory store has finite limits and is only for tests or
 short-lived processes.
 
-The harness sends one model call for an exact sticky route. It can send a
+The client can supply the harness model-caller port. The harness sends one
+model call for an exact sticky route. It can send a
 separate assignment call after a failure before visible output. The assignment
 call carries an explicit exclusion for the failed sticky route. A transport
 adapter must enforce this exclusion. A failure after visible output or an

@@ -697,17 +697,21 @@ Evidence:
 - `xbot/docs/contracts` maps Xbot to shared service contracts.
 - `fj2` and `crewday` expose automation APIs that need stable boundary tests.
 
-Keep official Router and Ontology clients in their service repositories. A
-client for one service is not a shared-library feature. A common Python
-transport helper is useful only if it has no Router or Ontology policy.
+The accepted Router SDK specification replaces the earlier location guidance.
+The official framework-neutral Python Router client lives in this package so
+calling services use one native contract implementation. The official
+Ontology client also lives here. Service policy, routes, data models, and
+framework adapters stay in their owning service repositories.
 
 ### 17. Router model contract and shared harness
 
-The accepted Router specifications now define this implemented narrow
-boundary. The package defines:
+The accepted Router specifications now define this implemented boundary. The
+package defines:
 
 - provider-neutral model messages, tools, selectors, results, and usage values;
-- an async model caller protocol without a built-in HTTP transport;
+- one dependency-free typed client for all native service-key operations;
+- closed native JSON and server-sent event parsing with safe typed errors;
+- an async model caller protocol with the native client as its HTTP adapter;
 - immutable conversation and exact sticky-route state;
 - sequential tool execution in model order and a replaceable batch executor;
 - deterministic bounded pruning and pinned model compaction hooks;

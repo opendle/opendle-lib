@@ -29,9 +29,10 @@ use immutable tuples. The harness does not change the input state.
 
 ## Model transport port
 
-`ModelCaller` is async and has no HTTP dependency. It receives one complete
-`ModelCall` and returns one `ModelCallResult`. A caller or a later SDK adapter
-implements the live Router transport.
+`ModelCaller` is async and has no framework dependency. It receives one
+complete `ModelCall` and returns one `ModelCallResult`. `RouterClient`
+implements this port with the native Router HTTP API. A caller can supply a
+different port for tests or host integration.
 
 The model call enforces the native 2 MiB JSON-body limit. This limit includes
 messages, tool definitions, tags, selectors, and JSON structure. It excludes
