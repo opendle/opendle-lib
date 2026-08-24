@@ -6,10 +6,13 @@ import asyncio
 import json
 import math
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from io import BytesIO
 from typing import TYPE_CHECKING, cast
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler
 
@@ -57,6 +60,7 @@ from opendle import (
     RouterResponseLimitError,
     RouterStreamError,
     RouterStreamResponse,
+    RouterTransport,
     RouterTransportError,
     RouterTransportResponse,
     RouterUnavailableError,
@@ -89,6 +93,7 @@ _EXPECTED_PAGE_COUNT = 2
 _MODEL_MAX_CONTEXT_TOKENS = 131_072
 _MODEL_MAX_OUTPUT_TOKENS = 8_192
 _MAXIMUM_SIGNED_32_BIT_INTEGER = 2_147_483_647
+_EXPECTED_HTTP_ERRORS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -1029,6 +1034,14 @@ def test_public_request_bounds_reject_invalid_values() -> None:  # noqa: PLR0915
         tuple(subject.iter_provider_model_pages(max_pages=cast("int", 1.5)))
     with pytest.raises(ValueError, match=r".+"):
         subject.create_embedding("main", AssignmentSelector("a"), ())
+    with pytest.raises(TypeError, match="sequence of text"):
+        subject.create_embedding(
+            "main", AssignmentSelector("a"), cast("Sequence[str]", "x")
+        )
+    with pytest.raises(TypeError, match="must be text"):
+        subject.create_embedding(
+            "main", AssignmentSelector("a"), cast("Sequence[str]", (1,))
+        )
     with pytest.raises(ValueError, match=r".+"):
         subject.create_embedding("main", AssignmentSelector("a"), ("x",) * 33)
     with pytest.raises(ValueError, match=r".+"):
@@ -2571,13 +2584,76 @@ def test_default_transport_disables_environment_proxy_handlers(
     """The service-key transport installs no environment proxy handler."""
     monkeypatch.setenv("HTTP_PROXY", "http://hostile.invalid:9000")
     monkeypatch.setenv("HTTPS_PROXY", "http://hostile.invalid:9000")
-    transport = private("_UrllibTransport")(1024)
+    transport = cast("RouterTransport", private("_UrllibTransport")(1024))
     opener = vars(transport)["_opener"]
     handlers = cast("Iterable[object]", vars(opener)["handlers"])
     proxy_handlers = tuple(
         handler for handler in handlers if isinstance(handler, ProxyHandler)
     )
     assert proxy_handlers == ()
+
+
+def test_standard_library_transport_closes_complete_and_stream_http_errors() -> None:
+    """Close each HTTP error after its bounded body enters the response value."""
+    error_body = json.dumps(
+        {"error": {"code": "invalid_request", "message": "Invalid request."}}
+    ).encode()
+    errors: list[HTTPError] = []
+
+    class ErrorOpener:
+        def open(self, *_args: object, **_kwargs: object) -> object:
+            headers = Message()
+            headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(error_body))
+            error = HTTPError(
+                "http://127.0.0.1:8000/v1/embeddings",
+                400,
+                "bad",
+                headers,
+                BytesIO(error_body),
+            )
+            errors.append(error)
+            raise error
+
+    transport = cast("RouterTransport", private("_UrllibTransport")(1024))
+    vars(transport)["_opener"] = ErrorOpener()
+    complete = transport.request("GET", "http://127.0.0.1:8000/v1/x", {}, None, 1)
+    streamed = transport.stream("POST", "http://127.0.0.1:8000/v1/x", {}, b"{}", 1)
+
+    assert complete.body == error_body
+    assert tuple(streamed.chunks) == (error_body,)
+    assert len(errors) == _EXPECTED_HTTP_ERRORS
+    assert all(error.closed for error in errors)
+
+
+def test_standard_library_stream_closes_response_when_headers_are_invalid() -> None:
+    """Close one open stream when its response headers fail validation."""
+
+    class InvalidHeaderResponse:
+        status = 200
+
+        def __init__(self) -> None:
+            self.headers = self
+            self.closed = False
+
+        def raw_items(self) -> tuple[tuple[str, str], ...]:
+            return (("X-Test", "value"),) * 101
+
+        def close(self) -> None:
+            self.closed = True
+
+    response = InvalidHeaderResponse()
+
+    class ResponseOpener:
+        def open(self, *_args: object, **_kwargs: object) -> object:
+            return response
+
+    transport = cast("RouterTransport", private("_UrllibTransport")(1024))
+    vars(transport)["_opener"] = ResponseOpener()
+
+    with pytest.raises(RouterResponseLimitError, match="many headers"):
+        transport.stream("POST", "http://127.0.0.1:8000/v1/x", {}, b"{}", 1)
+    assert response.closed
 
 
 def test_standard_library_transport_uses_localhost_and_rejects_redirects() -> None:

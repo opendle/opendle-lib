@@ -701,11 +701,14 @@ class _UrllibTransport:
                     response.read(self._maximum_response_bytes + 1),
                 )
         except HTTPError as error:
-            return RouterTransportResponse(
-                error.code,
-                _response_headers(error.headers.raw_items()),
-                error.read(self._maximum_response_bytes + 1),
-            )
+            try:
+                return RouterTransportResponse(
+                    error.code,
+                    _response_headers(error.headers.raw_items()),
+                    error.read(self._maximum_response_bytes + 1),
+                )
+            finally:
+                error.close()
 
     def stream(
         self,
@@ -721,11 +724,21 @@ class _UrllibTransport:
         try:
             response = self._opener.open(request, timeout=timeout)
         except HTTPError as error:
-            return RouterStreamResponse(
-                error.code,
-                _response_headers(error.headers.raw_items()),
-                (error.read(self._maximum_response_bytes + 1),),
-            )
+            try:
+                return RouterStreamResponse(
+                    error.code,
+                    _response_headers(error.headers.raw_items()),
+                    (error.read(self._maximum_response_bytes + 1),),
+                )
+            finally:
+                error.close()
+
+        try:
+            status = response.status
+            response_headers = _response_headers(response.headers.raw_items())
+        except BaseException:
+            response.close()
+            raise
 
         def chunks() -> Iterator[bytes]:
             with response:
@@ -733,8 +746,8 @@ class _UrllibTransport:
                     yield chunk
 
         return RouterStreamResponse(
-            response.status,
-            _response_headers(response.headers.raw_items()),
+            status,
+            response_headers,
             chunks(),
         )
 
@@ -1117,12 +1130,20 @@ class RouterClient:
     ) -> EmbeddingResult:
         """Make one complete native embedding batch call."""
         _api_name(workspace_api_name, "workspace")
-        items = tuple(inputs)
-        if not 1 <= len(items) <= _MAXIMUM_EMBEDDING_ITEMS:
+        if isinstance(inputs, (str, bytes, bytearray)):
+            msg = "Embedding inputs must be one sequence of text items."
+            raise TypeError(msg)
+        raw_items = tuple(cast("Sequence[object]", inputs))
+        if not 1 <= len(raw_items) <= _MAXIMUM_EMBEDDING_ITEMS:
             msg = "An embedding batch must contain 1 through 32 items."
             raise ValueError(msg)
+        items: list[str] = []
         encoded_total = 0
-        for item in items:
+        for item in raw_items:
+            if not isinstance(item, str):
+                msg = "Each embedding input must be text."
+                raise TypeError(msg)
+            items.append(item)
             encoded = _text(item, "embedding input", _MAXIMUM_EMBEDDING_ITEM_BYTES)
             if len(encoded) > _MAXIMUM_EMBEDDING_ITEM_BYTES:
                 msg = "An embedding input exceeds 32768 UTF-8 bytes."
