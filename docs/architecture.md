@@ -33,6 +33,14 @@ The public `opendle.oidc` module contains dependency-free authorization request
 primitives. Consumers keep provider HTTP calls, token exchange, identity-token
 validation, local sessions, grants, routes, and deployment configuration.
 
+The public `opendle.openrouter` module validates strict model identifiers and
+bounded public catalog JSON snapshots. It returns immutable source facts for
+modalities, capabilities, bounds, reasoning, constraints, and exact typed USD
+price values. It does not fetch a catalog, select a provider connection, map a
+host contract, authorize an HTTP endpoint, apply a transaction, or infer a
+fact that the catalog does not support. Stable errors do not include a model
+reference or catalog content.
+
 The public `opendle.router` module contains provider-neutral model messages,
 tool parts, selectors, usage values, model call results, and the model caller
 protocol. An exact provider-model selector identifies one configured provider

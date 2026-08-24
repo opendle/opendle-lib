@@ -23,6 +23,12 @@ exact sticky routes, bounded pruning, and pinned model compaction. It does not
 execute in Router and does not own durable storage. See `docs/router-sdk.md`
 and `docs/router-harness.md` for the public APIs.
 
+The package supplies a dependency-free parser for public OpenRouter model
+catalog snapshots. It accepts strict model identifiers and supported HTTPS
+`openrouter.ai` model URLs. It validates fixed input, container, field, and
+number bounds and returns immutable typed source facts. The caller owns the
+catalog HTTP request, deadline, authority, cache, and product mapping.
+
 The package supplies a dependency-free dynamic Ontology client. One client
 binds one service API name and one backend-only service key. It has one method
 for each operation that accepts a service key in the accepted Ontology OpenAPI
