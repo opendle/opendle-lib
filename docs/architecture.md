@@ -57,6 +57,43 @@ It does not resolve an assignment or use fallback. The hook must preserve the
 system and tool prefix and the active compatible suffix. A selected failure
 policy either stops or applies deterministic bounded pruning.
 
+The public `opendle.ontology` module contains the dependency-free dynamic
+Ontology HTTP client. One client has one service scope and one private service
+key. Workspace operations require an explicit workspace API name. Only the
+accepted service bulk operation can name more than one workspace. The module
+uses the standard-library HTTP transport by default and accepts a small
+transport port for tests or host integration. It does not import an Ontology
+server, framework, data store, or generated service types.
+
+The client sends a service key only in the `Authorization` header. It does not
+log. Its representations and client-created exceptions redact the key. It
+uses deterministic query and request encoding, caller-bounded cursor pages,
+RFC 8785 value fingerprints, calculated file integrity headers, exact file
+downloads, and stable typed public HTTP errors. It does not retry a mutation,
+change a public limit, or add cancellation or receipt behavior.
+
+The file-name upload header is ASCII `u8.` followed by canonical unpadded
+Base64URL of the exact UTF-8 file-name bytes. The client validates the decoded
+name rules before it encodes the header. It does not normalize Unicode or send
+a legacy raw file name.
+
+The client applies a finite byte bound to each successful response before it
+parses or returns the body. The standard-library transport reads at most one
+byte beyond that bound. A custom transport response has the same client check.
+The response schemas bound page items and individual values, but they do not
+define one aggregate encoded-byte maximum. The default bound is 16 MiB, which
+is above the accepted 10 MiB managed-file maximum. A host can select a larger
+positive integer when a bounded schema can produce a larger response. There is
+no unbounded mode.
+
+The public `opendle.ontology_agent` module contains compact YAML helpers. One
+helper instance has one explicit service and workspace scope. Optional detail
+is caller-selected, and each result has a strict byte bound. The helpers use
+only the JSON-equivalent YAML subset. They do not define an agent protocol,
+authorization model, or ontology-specific static type. Detail selection acts
+only on recognized public response envelopes and property occurrences. It does
+not remove fields with the same names from structured property values.
+
 ## Extraction rule
 
 Shared syntax is not sufficient evidence for a shared abstraction. Extract

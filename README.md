@@ -19,6 +19,39 @@ tools, storage callbacks, and transport ports. It supports exact sticky routes,
 bounded pruning, and pinned model compaction. It does not execute in Router and
 does not own durable storage. See `docs/router-harness.md` for the public API.
 
+The package supplies a dependency-free dynamic Ontology client. One client
+binds one service API name and one backend-only service key. It has one method
+for each operation that accepts a service key in the accepted Ontology OpenAPI
+contract. It supports exact JSON and safe YAML ontology requests, bounded
+cursor pages, value fingerprints, managed file transfer, and stable typed HTTP
+errors. The key goes only in the HTTP `Authorization` header. Client and error
+representations do not contain it. Successful response bodies have a finite
+caller-configurable byte bound. The default is 16 MiB, which accepts the full
+10 MiB managed-file limit. A caller that needs a larger bounded JSON response
+can set `maximum_success_response_bytes` to a larger positive integer.
+File uploads encode the exact UTF-8 file name as canonical unpadded Base64URL
+after the ASCII `u8.` marker. The client does not normalize Unicode.
+
+`OntologyAgentHelpers` binds the client to one explicit workspace. It can
+return deterministic compact YAML for object, link, query, graph, and
+changed-since results. Timestamps and expanded bags are opt-in. Each complete
+YAML result has a caller-selected byte bound. These helpers are normal SDK
+calls. They do not define an agent protocol or generate ontology-specific
+types.
+
+```python
+from opendle import OntologyAgentHelpers, OntologyClient
+
+client = OntologyClient(
+    base_url=configuration.ontology_url,
+    service_api_name=configuration.ontology_service,
+    service_key=configuration.ontology_service_key,
+    maximum_success_response_bytes=16_777_216,
+)
+helpers = OntologyAgentHelpers(client, workspace_api_name="conversation-42")
+object_yaml = helpers.get_object_yaml("message-1")
+```
+
 Do not commit secrets, credentials, tokens, private data, internal-only
 configuration, or unpublished third-party material.
 
