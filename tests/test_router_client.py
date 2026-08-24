@@ -34,6 +34,7 @@ from opendle import (
     ModelCallError,
     ModelCallResult,
     ModelCapability,
+    ModelConstraints,
     ModelStreamCompleted,
     ModelStreamStart,
     ModelStreamTextDelta,
@@ -85,6 +86,9 @@ _EXPECTED_ATTEMPTS = 2
 _EXPECTED_CALL_TIMEOUT = 4.5
 _FORBIDDEN_STATUS = 403
 _EXPECTED_PAGE_COUNT = 2
+_MODEL_MAX_CONTEXT_TOKENS = 131_072
+_MODEL_MAX_OUTPUT_TOKENS = 8_192
+_MAXIMUM_SIGNED_32_BIT_INTEGER = 2_147_483_647
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +296,8 @@ def provider_model() -> dict[str, object]:
         "output_modalities": ["text", "embedding", "image"],
         "capabilities": ["tool_calling", "streaming", "reasoning"],
         "constraints": {
+            "max_context_tokens": _MODEL_MAX_CONTEXT_TOKENS,
+            "max_output_tokens": _MODEL_MAX_OUTPUT_TOKENS,
             "embedding_dimensions": [2],
             "max_input_images": 8,
             "max_input_image_bytes": 20_971_520,
@@ -340,6 +346,49 @@ def model_call(*, structured: bool = False) -> ModelCall:
 def private(name: str) -> PrivateFunction:
     """Return one private parser for direct defensive-contract tests."""
     return cast("PrivateFunction", getattr(router_client_module, name))
+
+
+def test_model_constraints_public_contract_and_parser_bounds() -> None:
+    """Token limits are public, optional, bounded 32-bit constraint fields."""
+    parsed = private("_constraints")(
+        {
+            "max_context_tokens": 1,
+            "max_output_tokens": _MAXIMUM_SIGNED_32_BIT_INTEGER,
+        }
+    )
+    assert isinstance(parsed, ModelConstraints)
+    assert parsed == ModelConstraints(
+        max_context_tokens=1,
+        max_output_tokens=_MAXIMUM_SIGNED_32_BIT_INTEGER,
+    )
+    assert "max_context_tokens=1" in repr(parsed)
+    assert "max_output_tokens=2147483647" in repr(parsed)
+
+    absent = private("_constraints")({})
+    assert absent == ModelConstraints()
+
+    legacy_positional = ModelConstraints((2,), 8, 20_971_520, 60)
+    assert legacy_positional.max_context_tokens is None
+    assert legacy_positional.max_output_tokens is None
+
+
+@pytest.mark.parametrize("field", ["max_context_tokens", "max_output_tokens"])
+@pytest.mark.parametrize(
+    "invalid_value",
+    [True, 0, -1, 2_147_483_648, "1", 1.0, None, [], {}],
+)
+def test_model_constraints_reject_invalid_token_limits(
+    field: str, invalid_value: object
+) -> None:
+    """Each token-limit field rejects non-integers and out-of-range integers."""
+    with pytest.raises(RouterProtocolError):
+        private("_constraints")({field: invalid_value})
+
+
+def test_model_constraints_reject_unknown_fields() -> None:
+    """Unknown constraint fields cannot enter the public SDK value."""
+    with pytest.raises(RouterProtocolError):
+        private("_constraints")({"maximum_context_tokens": 1})
 
 
 def test_complete_native_service_key_contract_and_types() -> None:  # noqa: PLR0915
@@ -476,6 +525,8 @@ def test_complete_native_service_key_contract_and_types() -> None:  # noqa: PLR0
     )
     assert available.constraints is not None
     assert available.constraints.embedding_dimensions == (2,)
+    assert available.constraints.max_context_tokens == _MODEL_MAX_CONTEXT_TOKENS
+    assert available.constraints.max_output_tokens == _MODEL_MAX_OUTPUT_TOKENS
     assert available.effective_price is not None
     assert available.effective_price.unit_prices[0].unit is UsageUnit.REQUEST
 

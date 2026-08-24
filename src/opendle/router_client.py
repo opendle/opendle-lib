@@ -139,6 +139,7 @@ _MAXIMUM_EMBEDDING_ITEMS = 32
 _MAXIMUM_EMBEDDING_ITEM_BYTES = 32_768
 _MAXIMUM_EMBEDDING_BATCH_BYTES = 262_144
 _MAXIMUM_EMBEDDING_DIMENSIONS = 65_536
+_MAXIMUM_SIGNED_32_BIT_INTEGER = 2_147_483_647
 _MAXIMUM_INPUT_IMAGES = 8
 _MAXIMUM_PAGE_SIZE = 200
 _MAXIMUM_STATISTICS_GROUPS = 8
@@ -467,6 +468,8 @@ class ModelConstraints:
     max_input_images: int | None = None
     max_input_image_bytes: int | None = None
     max_output_duration_seconds: int | None = None
+    max_context_tokens: int | None = None
+    max_output_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2025,6 +2028,8 @@ def _constraints(value: JsonObject) -> ModelConstraints:
             "max_input_images",
             "max_input_image_bytes",
             "max_output_duration_seconds",
+            "max_context_tokens",
+            "max_output_tokens",
         },
     )
     dimensions = tuple(
@@ -2041,10 +2046,24 @@ def _constraints(value: JsonObject) -> ModelConstraints:
         msg = "The Router embedding dimension constraints are invalid."
         raise RouterProtocolError(msg)
     return ModelConstraints(
-        dimensions,
-        _optional_int(item, "max_input_images", maximum=8),
-        _optional_int(item, "max_input_image_bytes", maximum=20 * 1024 * 1024),
-        _optional_int(item, "max_output_duration_seconds", maximum=86_400),
+        embedding_dimensions=dimensions,
+        max_input_images=_optional_int(item, "max_input_images", maximum=8),
+        max_input_image_bytes=_optional_int(
+            item, "max_input_image_bytes", maximum=20 * 1024 * 1024
+        ),
+        max_output_duration_seconds=_optional_int(
+            item, "max_output_duration_seconds", maximum=86_400
+        ),
+        max_context_tokens=_optional_int(
+            item,
+            "max_context_tokens",
+            maximum=_MAXIMUM_SIGNED_32_BIT_INTEGER,
+        ),
+        max_output_tokens=_optional_int(
+            item,
+            "max_output_tokens",
+            maximum=_MAXIMUM_SIGNED_32_BIT_INTEGER,
+        ),
     )
 
 
