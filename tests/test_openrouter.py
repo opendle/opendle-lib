@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import FrozenInstanceError
 from decimal import Decimal
+from unittest.mock import Mock
 
 import pytest
 
@@ -14,12 +15,13 @@ from opendle import (
     OpenRouterConstraint,
     OpenRouterDuplicateModelError,
     OpenRouterInputModality,
+    OpenRouterModelFacts,
     OpenRouterModelNotFoundError,
     OpenRouterOutputModality,
     OpenRouterPriceUnit,
     OpenRouterReferenceError,
     normalize_openrouter_model_reference,
-    parse_openrouter_catalog_snapshot,
+    parse_openrouter_model_snapshot,
 )
 
 _MAXIMUM_SNAPSHOT_BYTES = 8 * 1024 * 1024
@@ -29,6 +31,10 @@ _TOP_OUTPUT_BOUND = 8192
 _ROOT_CONTEXT_BOUND = 4096
 _ROOT_OUTPUT_BOUND = 1024
 _MAXIMUM_INTEGER_BOUND = 2_147_483_647
+_PRICE_OVERRIDE_COUNT = 2
+_PRICE_OVERRIDE_PROMPT_THRESHOLD = 200_000
+_PRICE_OVERRIDE_UTC_START = 1630
+_PRICE_OVERRIDE_UTC_END = 30
 
 
 def _snapshot(*rows: object, **extra: object) -> bytes:
@@ -38,7 +44,8 @@ def _snapshot(*rows: object, **extra: object) -> bytes:
 def _row(**replacements: object) -> dict[str, object]:
     row: dict[str, object] = {
         "id": "google/gemma-4-31b-it",
-        "name": " Google: Gemma 4 31B Instruct ",
+        "canonical_slug": "google/gemma-4-31b-it-20260824",
+        "name": "Google: Gemma 4 31B Instruct",
         "context_length": 100_000,
         "architecture": {
             "input_modalities": ["text", "image", "audio", "video", "file"],
@@ -51,7 +58,7 @@ def _row(**replacements: object) -> dict[str, object]:
             ],
         },
         "top_provider": {
-            "context_length": "131072",
+            "context_length": 131072,
             "max_completion_tokens": 8192,
         },
         "supported_parameters": [
@@ -74,22 +81,52 @@ def _row(**replacements: object) -> dict[str, object]:
             "logprobs",
             "top_logprobs",
         ],
-        "reasoning": {"mandatory": True},
+        "reasoning": {
+            "mandatory": True,
+            "default_enabled": True,
+            "default_effort": "high",
+            "supported_efforts": ["high", "medium", "low"],
+            "supports_max_tokens": False,
+        },
         "pricing": {
             "prompt": "0.00000013",
-            "completion": 0.0000004,
-            "input_cache_read": 0,
+            "completion": "0.0000004",
+            "input_cache_read": "0",
             "input_cache_write": "1e-8",
+            "input_cache_write_1h": "2e-8",
             "image": "0.01",
-            "request": 1,
+            "image_output": "0.02",
+            "image_token": "0.00001",
+            "request": "1",
             "web_search": "0.02",
             "internal_reasoning": "0.00000002",
             "audio": "0.00000003",
+            "audio_output": "0.00000004",
+            "input_audio_cache": "0.00000001",
+            "overrides": [
+                {
+                    "min_prompt_tokens": 200000,
+                    "prompt": "0.00000026",
+                    "completion": "0.0000008",
+                },
+                {
+                    "utc_start": 1630,
+                    "utc_end": 30,
+                    "prompt": "0.0000001",
+                },
+            ],
             "future_unit": "not interpreted",
         },
     }
     row.update(replacements)
     return row
+
+
+def _parse_model(
+    snapshot: bytes | str,
+    model_id_or_url: str = "google/gemma-4-31b-it",
+) -> OpenRouterModelFacts:
+    return parse_openrouter_model_snapshot(snapshot, model_id_or_url)
 
 
 def test_reference_accepts_exact_ids_and_supported_https_urls() -> None:
@@ -100,11 +137,16 @@ def test_reference_accepts_exact_ids_and_supported_https_urls() -> None:
         "https://openrouter.ai/google/gemma-4-31b-it/",
         "https://openrouter.ai/models/google/gemma-4-31b-it",
         "HTTPS://OPENROUTER.AI/models/google/gemma-4-31b-it",
+        "~anthropic/claude-sonnet-latest",
+        "https://openrouter.ai/models/~anthropic/claude-sonnet-latest",
     )
     for reference in references:
-        assert (
-            normalize_openrouter_model_reference(reference) == "google/gemma-4-31b-it"
+        expected = (
+            "~anthropic/claude-sonnet-latest"
+            if "anthropic" in reference
+            else "google/gemma-4-31b-it"
         )
+        assert normalize_openrouter_model_reference(reference) == expected
 
 
 def test_reference_accepts_exact_identifier_boundaries() -> None:
@@ -125,6 +167,8 @@ def test_reference_accepts_exact_identifier_boundaries() -> None:
         "google/mo del",
         "google/.model",
         "google/model:",
+        "google~/model",
+        "~~google/model",
         "googlé/model",
         "google/mo\tdel",
         f"{'v' * 81}/model",
@@ -173,12 +217,13 @@ def test_reference_rejects_non_string_runtime_input_safely() -> None:
 
 def test_catalog_returns_complete_typed_source_facts() -> None:
     """One complete row maps only explicit facts into immutable typed values."""
-    facts = parse_openrouter_catalog_snapshot(_snapshot(_row())).model(
-        "https://openrouter.ai/models/google/gemma-4-31b-it"
+    facts = parse_openrouter_model_snapshot(
+        _snapshot(_row()),
+        "https://openrouter.ai/models/google/gemma-4-31b-it",
     )
 
     assert facts.model_id == "google/gemma-4-31b-it"
-    assert facts.canonical_source_name == "gemma-4-31b-it"
+    assert facts.canonical_slug == "google/gemma-4-31b-it-20260824"
     assert facts.display_source_name == "Google: Gemma 4 31B Instruct"
     assert facts.input_modalities == tuple(OpenRouterInputModality)
     assert facts.output_modalities == tuple(OpenRouterOutputModality)
@@ -187,6 +232,11 @@ def test_catalog_returns_complete_typed_source_facts() -> None:
     assert facts.maximum_output_tokens == _TOP_OUTPUT_BOUND
     assert facts.reasoning.supported is True
     assert facts.reasoning.mandatory is True
+    assert facts.reasoning.source_configuration_available is True
+    assert facts.reasoning.default_enabled is True
+    assert facts.reasoning.default_effort == "high"
+    assert facts.reasoning.supported_efforts == ("high", "medium", "low")
+    assert facts.reasoning.supports_max_tokens is False
     assert facts.supported_constraints == tuple(OpenRouterConstraint)
     assert tuple(price.unit for price in facts.price_source_values) == tuple(
         OpenRouterPriceUnit
@@ -195,15 +245,32 @@ def test_catalog_returns_complete_typed_source_facts() -> None:
     assert facts.price_source_values[1].amount == Decimal("0.0000004")
     assert facts.price_source_values[2].amount == Decimal(0)
     assert facts.price_source_values[3].amount == Decimal("1e-8")
-    assert facts.price_source_values[-1].source_field == "audio"
+    assert facts.price_source_values[-1].source_field == "input_audio_cache"
     assert {price.currency for price in facts.price_source_values} == {"USD"}
+    assert len(facts.price_overrides) == _PRICE_OVERRIDE_COUNT
+    assert (
+        facts.price_overrides[0].minimum_prompt_tokens
+        == _PRICE_OVERRIDE_PROMPT_THRESHOLD
+    )
+    assert facts.price_overrides[0].utc_start is None
+    assert facts.price_overrides[1].utc_start == _PRICE_OVERRIDE_UTC_START
+    assert facts.price_overrides[1].utc_end == _PRICE_OVERRIDE_UTC_END
+    assert facts.price_overrides[1].price_source_values[0].amount == Decimal(
+        "0.0000001"
+    )
     with pytest.raises(FrozenInstanceError):
         facts.model_id = "changed/model"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        facts.reasoning.mandatory = False  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        facts.price_source_values[0].amount = Decimal(0)  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        facts.price_overrides[0].utc_start = 0  # type: ignore[misc]
 
 
 def test_catalog_preserves_missing_and_unknown_facts_as_uncertainty() -> None:
     """Missing facts stay absent, and unknown source labels are not invented."""
-    catalog = parse_openrouter_catalog_snapshot(
+    facts = parse_openrouter_model_snapshot(
         _snapshot(
             {
                 "id": "new-vendor/new-model",
@@ -214,11 +281,12 @@ def test_catalog_preserves_missing_and_unknown_facts_as_uncertainty() -> None:
                 "supported_parameters": ["future_parameter"],
                 "pricing": {"future_price": "0.5", "prompt": None},
             }
-        )
+        ),
+        "new-vendor/new-model",
     )
-    facts = catalog.model("new-vendor/new-model")
 
     assert facts.display_source_name is None
+    assert facts.canonical_slug is None
     assert facts.input_modalities == (OpenRouterInputModality.TEXT,)
     assert facts.output_modalities == ()
     assert facts.capabilities == ()
@@ -226,8 +294,10 @@ def test_catalog_preserves_missing_and_unknown_facts_as_uncertainty() -> None:
     assert facts.maximum_output_tokens is None
     assert facts.reasoning.supported is False
     assert facts.reasoning.mandatory is None
+    assert facts.reasoning.source_configuration_available is False
     assert facts.supported_constraints == ()
     assert facts.price_source_values == ()
+    assert facts.price_overrides == ()
 
 
 def test_catalog_maps_all_capability_aliases_and_reasoning_shapes() -> None:
@@ -257,37 +327,44 @@ def test_catalog_maps_all_capability_aliases_and_reasoning_shapes() -> None:
             pricing=None,
         ),
     )
-    catalog = parse_openrouter_catalog_snapshot(_snapshot(*rows))
+    aliases = parse_openrouter_model_snapshot(_snapshot(*rows), "aliases/model")
+    reasoning_object = parse_openrouter_model_snapshot(
+        _snapshot(*rows), "reasoning/object"
+    )
+    reasoning_optional = parse_openrouter_model_snapshot(
+        _snapshot(*rows), "reasoning/optional"
+    )
 
-    assert catalog.model("aliases/model").capabilities == tuple(OpenRouterCapability)
-    assert catalog.model("aliases/model").reasoning.mandatory is None
-    assert catalog.model("reasoning/object").reasoning == catalog.model(
-        "reasoning/object"
-    ).reasoning.__class__(supported=True, mandatory=None)
-    assert catalog.model("reasoning/optional").reasoning.mandatory is False
+    assert aliases.capabilities == tuple(OpenRouterCapability)
+    assert aliases.reasoning.mandatory is None
+    assert reasoning_object.reasoning == reasoning_object.reasoning.__class__(
+        supported=True,
+        mandatory=None,
+        source_configuration_available=True,
+    )
+    assert reasoning_optional.reasoning.mandatory is False
 
 
 def test_catalog_uses_root_bounds_when_top_provider_has_no_value() -> None:
-    """Root integer strings supply bounds only when preferred facts are absent."""
-    facts = parse_openrouter_catalog_snapshot(
+    """Root integers supply bounds only when preferred facts are absent."""
+    facts = _parse_model(
         _snapshot(
             _row(
                 top_provider=None,
-                context_length="4096",
-                max_completion_tokens="1024",
+                context_length=4096,
+                max_completion_tokens=1024,
                 pricing=None,
             )
         )
-    ).models[0]
+    )
     assert facts.context_window_tokens == _ROOT_CONTEXT_BOUND
     assert facts.maximum_output_tokens == _ROOT_OUTPUT_BOUND
 
 
 def test_catalog_missing_model_uses_stable_safe_error() -> None:
     """An absent exact row does not put the requested identifier in the error."""
-    catalog = parse_openrouter_catalog_snapshot(_snapshot(_row()))
     with pytest.raises(OpenRouterModelNotFoundError) as captured:
-        catalog.model("secret-vendor/secret-model")
+        parse_openrouter_model_snapshot(_snapshot(_row()), "secret-vendor/secret-model")
     assert str(captured.value) == "The OpenRouter model is not in the catalog snapshot."
     assert "secret" not in str(captured.value)
 
@@ -295,7 +372,7 @@ def test_catalog_missing_model_uses_stable_safe_error() -> None:
 def test_catalog_rejects_duplicate_exact_rows() -> None:
     """Two rows with one exact model identifier make the snapshot ambiguous."""
     with pytest.raises(OpenRouterDuplicateModelError) as captured:
-        parse_openrouter_catalog_snapshot(_snapshot(_row(), _row(name="Other")))
+        _parse_model(_snapshot(_row(), _row(name="Other")))
     assert str(captured.value) == (
         "The OpenRouter catalog has a duplicate model identifier."
     )
@@ -315,57 +392,123 @@ def test_catalog_rejects_duplicate_exact_rows() -> None:
         b"[]",
         b"{}",
         b'{"data":{}}',
-        _snapshot(None),
-        _snapshot({}),
-        _snapshot({"id": 1}),
-        _snapshot({"id": "bad"}),
-        _snapshot({"id": "googl\u00e9/model"}),
     ],
 )
-def test_catalog_rejects_invalid_json_and_row_shapes(snapshot: bytes | str) -> None:
-    """Invalid snapshot and row shapes use one safe catalog error."""
+def test_catalog_rejects_invalid_json_and_root_shapes(snapshot: bytes | str) -> None:
+    """Invalid snapshot and root shapes use one safe catalog error."""
     with pytest.raises(OpenRouterCatalogError) as captured:
-        parse_openrouter_catalog_snapshot(snapshot)
+        _parse_model(snapshot)
     assert str(captured.value) == "The OpenRouter catalog snapshot is invalid."
+
+
+def test_selected_model_ignores_malformed_unrelated_rows() -> None:
+    """A malformed unrelated row cannot block one valid selected model."""
+    malformed_rows: tuple[object, ...] = (
+        None,
+        {},
+        {"id": 1},
+        {"id": "bad"},
+        {"id": "googl\u00e9/model"},
+        {"id": "other/model", "name": 3, "pricing": {"prompt": True}},
+    )
+    facts = _parse_model(_snapshot(*malformed_rows, _row()))
+
+    assert facts.model_id == "google/gemma-4-31b-it"
+
+
+def test_selected_model_rejects_malformed_selected_row() -> None:
+    """Relevant-field validation still fails closed for the selected row."""
+    with pytest.raises(OpenRouterCatalogError):
+        _parse_model(_snapshot(_row(name=3), _row(id="other/model")))
 
 
 def test_catalog_accepts_exact_snapshot_byte_boundary() -> None:
     """A valid snapshot at the exact byte limit is accepted."""
     prefix = b'{"data":[]}'
     snapshot = prefix + (b" " * (_MAXIMUM_SNAPSHOT_BYTES - len(prefix)))
-    assert parse_openrouter_catalog_snapshot(snapshot).models == ()
+    with pytest.raises(OpenRouterModelNotFoundError):
+        _parse_model(snapshot)
 
 
 def test_catalog_rejects_snapshot_above_byte_boundary_and_surrogate_text() -> None:
     """One excess byte and a non-UTF-8 source string fail before parsing."""
     with pytest.raises(OpenRouterCatalogError):
-        parse_openrouter_catalog_snapshot(b" " * (_MAXIMUM_SNAPSHOT_BYTES + 1))
+        _parse_model(b" " * (_MAXIMUM_SNAPSHOT_BYTES + 1))
     with pytest.raises(OpenRouterCatalogError):
-        parse_openrouter_catalog_snapshot('{"data":[],"x":"\ud800"}')
+        _parse_model('{"data":[],"x":"\ud800"}')
     with pytest.raises(OpenRouterCatalogError):
-        parse_openrouter_catalog_snapshot(3)  # type: ignore[arg-type]
+        _parse_model(3)  # type: ignore[arg-type]
+
+
+def test_catalog_rejects_allocation_bounds_before_json_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Depth, item, node, and raw-string bounds apply before JSON allocation."""
+    loads = Mock(side_effect=AssertionError("the JSON decoder must not run"))
+    monkeypatch.setattr("opendle.openrouter.json.loads", loads)
+    snapshots = (
+        b"[" * 11 + b"0" + b"]" * 11,
+        json.dumps([0] * 10_001).encode(),
+        json.dumps({f"field_{index}": 0 for index in range(129)}).encode(),
+        b"[" + (b"0," * 200_000) + b"0]",
+        b'{"data":[],"value":"' + (b"x" * 196_609) + b'"}',
+        b'{"data":[],"' + (b"x" * 1_537) + b'":0}',
+        b'{"data" :[]',
+        b"}",
+        b",",
+        b"0" * 49,
+        b'"unterminated',
+    )
+    for snapshot in snapshots:
+        with pytest.raises(OpenRouterCatalogError):
+            _parse_model(snapshot)
+    loads.assert_not_called()
+
+
+def test_catalog_rechecks_decoded_container_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-decode checks protect callers if decoder behavior changes."""
+    nested: object = None
+    for _index in range(10):
+        nested = [nested]
+    decoded_values = (
+        nested,
+        {f"field_{index}": 0 for index in range(129)},
+        [0] * 10_001,
+    )
+    loads = Mock(side_effect=decoded_values)
+    monkeypatch.setattr("opendle.openrouter.json.loads", loads)
+    for _value in decoded_values:
+        with pytest.raises(OpenRouterCatalogError):
+            _parse_model(b"{}")
+    assert loads.call_count == len(decoded_values)
 
 
 def test_catalog_accepts_exact_collection_and_field_boundaries() -> None:
     """Collection, object, depth, text, token, and price maxima are inclusive."""
     rows = [{"id": f"vendor/model-{index}"} for index in range(10_000)]
-    assert len(parse_openrouter_catalog_snapshot(_snapshot(*rows)).models) == len(rows)
+    assert (
+        parse_openrouter_model_snapshot(_snapshot(*rows), "vendor/model-9999").model_id
+        == "vendor/model-9999"
+    )
 
     object_at_limit: dict[str, object] = {"id": "vendor/object-limit"}
     object_at_limit.update({f"field_{index}": index for index in range(127)})
-    parse_openrouter_catalog_snapshot(_snapshot(object_at_limit))
+    parse_openrouter_model_snapshot(_snapshot(object_at_limit), "vendor/object-limit")
+    _parse_model(_snapshot(_row(extra="\U0001f600" * 16_384, pricing=None)))
+    with pytest.raises(OpenRouterModelNotFoundError):
+        _parse_model(_snapshot(**{"\U0001f600" * 128: None}))
 
     nested: object = None
     for _index in range(6):
         nested = [nested]
-    parse_openrouter_catalog_snapshot(_snapshot(_row(extra=nested, pricing=None)))
-    parse_openrouter_catalog_snapshot(
-        _snapshot(_row(extra=[None] * 10_000, pricing=None))
-    )
+    _parse_model(_snapshot(_row(extra=nested, pricing=None)))
+    _parse_model(_snapshot(_row(extra=[None] * 10_000, pricing=None)))
 
     modalities = [f"modality_{index}" for index in range(16)]
     parameters = [f"parameter_{index}" for index in range(128)]
-    facts = parse_openrouter_catalog_snapshot(
+    facts = _parse_model(
         _snapshot(
             _row(
                 name="n" * 500,
@@ -377,7 +520,7 @@ def test_catalog_accepts_exact_collection_and_field_boundaries() -> None:
                 },
             )
         )
-    ).models[0]
+    )
     assert facts.display_source_name == "n" * 500
     assert facts.input_modalities == ()
     assert facts.supported_constraints == ()
@@ -407,7 +550,7 @@ def test_catalog_rejects_unsafe_container_bounds() -> None:
     ]
     for value in invalid_values:
         with pytest.raises(OpenRouterCatalogError):
-            parse_openrouter_catalog_snapshot(json.dumps(value).encode())
+            _parse_model(json.dumps(value).encode())
 
 
 @pytest.mark.parametrize(
@@ -415,13 +558,22 @@ def test_catalog_rejects_unsafe_container_bounds() -> None:
     [
         ("name", 3),
         ("name", " "),
+        ("name", " padded"),
         ("name", "x" * 501),
         ("name", "unsafe\u202e"),
         ("architecture", []),
         ("top_provider", []),
         ("reasoning", []),
         ("reasoning", {"mandatory": "yes"}),
+        ("reasoning", {"default_enabled": 1}),
+        ("reasoning", {"default_effort": "High"}),
+        ("reasoning", {"supported_efforts": "high"}),
+        ("reasoning", {"supported_efforts": ["high"] * 17}),
+        ("reasoning", {"supports_max_tokens": 1}),
         ("pricing", []),
+        ("canonical_slug", 3),
+        ("canonical_slug", "bad"),
+        ("canonical_slug", "googl\u00e9/model"),
         ("context_length", True),
         ("context_length", 0),
         ("context_length", -1),
@@ -438,7 +590,7 @@ def test_catalog_rejects_malformed_or_oversized_model_fields(
     row = _row(top_provider=None, pricing=None)
     row[field] = value
     with pytest.raises(OpenRouterCatalogError):
-        parse_openrouter_catalog_snapshot(_snapshot(row))
+        _parse_model(_snapshot(row))
 
 
 @pytest.mark.parametrize(
@@ -457,9 +609,7 @@ def test_catalog_rejects_malformed_modality_lists(field: str, value: object) -> 
     """Modality arrays have closed shape, item, count, and duplicate bounds."""
     architecture = {field: value}
     with pytest.raises(OpenRouterCatalogError):
-        parse_openrouter_catalog_snapshot(
-            _snapshot(_row(architecture=architecture, pricing=None))
-        )
+        _parse_model(_snapshot(_row(architecture=architecture, pricing=None)))
 
 
 @pytest.mark.parametrize(
@@ -476,9 +626,7 @@ def test_catalog_rejects_malformed_modality_lists(field: str, value: object) -> 
 def test_catalog_rejects_malformed_supported_parameter_lists(value: object) -> None:
     """Supported-parameter arrays use the same bounded source token rules."""
     with pytest.raises(OpenRouterCatalogError):
-        parse_openrouter_catalog_snapshot(
-            _snapshot(_row(supported_parameters=value, pricing=None))
-        )
+        _parse_model(_snapshot(_row(supported_parameters=value, pricing=None)))
 
 
 @pytest.mark.parametrize(
@@ -497,13 +645,38 @@ def test_catalog_rejects_malformed_supported_parameter_lists(value: object) -> N
 def test_catalog_rejects_invalid_price_source_values(value: object) -> None:
     """Price facts must be finite, bounded, non-negative decimal values."""
     with pytest.raises(OpenRouterCatalogError) as captured:
-        parse_openrouter_catalog_snapshot(_snapshot(_row(pricing={"prompt": value})))
+        _parse_model(_snapshot(_row(pricing={"prompt": value})))
     assert "not-a-price" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        [None],
+        [{}],
+        [{"min_prompt_tokens": 1}],
+        [{"min_prompt_tokens": True, "prompt": "1"}],
+        [{"min_prompt_tokens": -1, "prompt": "1"}],
+        [{"min_prompt_tokens": 2_147_483_648, "prompt": "1"}],
+        [{"utc_start": 1200, "prompt": "1"}],
+        [{"utc_start": 1260, "utc_end": 1300, "prompt": "1"}],
+        [{"utc_start": 2400, "utc_end": 0, "prompt": "1"}],
+        [{"utc_start": 1200, "utc_end": 1200, "prompt": "1"}],
+        [{"utc_start": "1200", "utc_end": 1300, "prompt": "1"}],
+        [{"min_prompt_tokens": 1, "prompt": 1}],
+        [{"min_prompt_tokens": 1, "prompt": "1"}] * 129,
+    ],
+)
+def test_catalog_rejects_invalid_price_overrides(overrides: object) -> None:
+    """Conditional prices require bounded conditions and typed source prices."""
+    with pytest.raises(OpenRouterCatalogError):
+        _parse_model(_snapshot(_row(pricing={"overrides": overrides})))
 
 
 def test_catalog_accepts_empty_optional_lists_and_exact_integer_bound() -> None:
     """Empty arrays and the inclusive integer maximum remain valid facts."""
-    facts = parse_openrouter_catalog_snapshot(
+    facts = _parse_model(
         _snapshot(
             _row(
                 name=None,
@@ -514,7 +687,7 @@ def test_catalog_accepts_empty_optional_lists_and_exact_integer_bound() -> None:
                 pricing=None,
             )
         )
-    ).models[0]
+    )
     assert facts.context_window_tokens == _MAXIMUM_INTEGER_BOUND
     assert facts.input_modalities == ()
     assert facts.output_modalities == ()

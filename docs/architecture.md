@@ -34,11 +34,16 @@ primitives. Consumers keep provider HTTP calls, token exchange, identity-token
 validation, local sessions, grants, routes, and deployment configuration.
 
 The public `opendle.openrouter` module validates strict model identifiers and
-bounded public catalog JSON snapshots. It returns immutable source facts for
-modalities, capabilities, bounds, reasoning, constraints, and exact typed USD
-price values. It does not fetch a catalog, select a provider connection, map a
-host contract, authorize an HTTP endpoint, apply a transaction, or infer a
-fact that the catalog does not support. Stable errors do not include a model
+selects one exact row from a bounded public catalog JSON snapshot. It validates
+model fields only in the selected row, so a malformed unrelated model does not
+block the selection. It rejects a malformed or duplicate selected row.
+Snapshot-wide JSON safety bounds apply to all rows. The module returns
+immutable source facts for canonical slugs, modalities, capabilities, bounds,
+reasoning defaults, constraints, and exact typed USD price values and
+conditional overrides. It applies allocation bounds before and after JSON
+decoding. It does not fetch a catalog, select a provider connection, map a host
+contract, authorize an HTTP endpoint, apply a transaction, or infer a fact
+that the catalog does not support. Stable errors do not include a model
 reference or catalog content.
 
 The public `opendle.router` module contains provider-neutral model messages,

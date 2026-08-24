@@ -64,7 +64,6 @@ from opendle.ontology_agent import (
 )
 from opendle.openrouter import (
     OpenRouterCapability,
-    OpenRouterCatalog,
     OpenRouterCatalogError,
     OpenRouterConstraint,
     OpenRouterDuplicateModelError,
@@ -73,12 +72,13 @@ from opendle.openrouter import (
     OpenRouterModelFacts,
     OpenRouterModelNotFoundError,
     OpenRouterOutputModality,
+    OpenRouterPriceOverride,
     OpenRouterPriceSourceValue,
     OpenRouterPriceUnit,
     OpenRouterReasoningFacts,
     OpenRouterReferenceError,
     normalize_openrouter_model_reference,
-    parse_openrouter_catalog_snapshot,
+    parse_openrouter_model_snapshot,
 )
 from opendle.router import (
     AssignmentSelector,
@@ -238,7 +238,6 @@ __all__ = [
     "OntologyUnavailableError",
     "OntologyValidationError",
     "OpenRouterCapability",
-    "OpenRouterCatalog",
     "OpenRouterCatalogError",
     "OpenRouterConstraint",
     "OpenRouterDuplicateModelError",
@@ -247,6 +246,7 @@ __all__ = [
     "OpenRouterModelFacts",
     "OpenRouterModelNotFoundError",
     "OpenRouterOutputModality",
+    "OpenRouterPriceOverride",
     "OpenRouterPriceSourceValue",
     "OpenRouterPriceUnit",
     "OpenRouterReasoningFacts",
@@ -315,7 +315,7 @@ __all__ = [
     "message_bytes",
     "normalize_openrouter_model_reference",
     "normalize_tags",
-    "parse_openrouter_catalog_snapshot",
+    "parse_openrouter_model_snapshot",
     "pkce_s256_challenge",
     "prune_messages",
     "run_stored",

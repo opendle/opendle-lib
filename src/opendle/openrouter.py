@@ -14,12 +14,11 @@ import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
-from typing import Final, cast
+from typing import Final, Literal, cast
 from urllib.parse import urlsplit
 
 __all__ = [
     "OpenRouterCapability",
-    "OpenRouterCatalog",
     "OpenRouterCatalogError",
     "OpenRouterConstraint",
     "OpenRouterDuplicateModelError",
@@ -28,12 +27,13 @@ __all__ = [
     "OpenRouterModelFacts",
     "OpenRouterModelNotFoundError",
     "OpenRouterOutputModality",
+    "OpenRouterPriceOverride",
     "OpenRouterPriceSourceValue",
     "OpenRouterPriceUnit",
     "OpenRouterReasoningFacts",
     "OpenRouterReferenceError",
     "normalize_openrouter_model_reference",
-    "parse_openrouter_catalog_snapshot",
+    "parse_openrouter_model_snapshot",
 ]
 
 _MAXIMUM_REFERENCE_BYTES: Final[int] = 512
@@ -47,8 +47,11 @@ _MAXIMUM_CONTAINER_DEPTH: Final[int] = 10
 _MAXIMUM_JSON_NODES: Final[int] = 200_000
 _MAXIMUM_JSON_STRING_CHARACTERS: Final[int] = 16_384
 _MAXIMUM_JSON_KEY_CHARACTERS: Final[int] = 128
+_MAXIMUM_JSON_CHARACTER_SOURCE_BYTES: Final[int] = 12
 _MAXIMUM_MODALITIES: Final[int] = 16
 _MAXIMUM_SUPPORTED_PARAMETERS: Final[int] = 128
+_MAXIMUM_REASONING_EFFORTS: Final[int] = 16
+_MAXIMUM_PRICE_OVERRIDES: Final[int] = 128
 _MAXIMUM_SOURCE_TOKEN_CHARACTERS: Final[int] = 64
 _MAXIMUM_TOKEN_BOUND: Final[int] = 2_147_483_647
 _MAXIMUM_NUMBER_DIGITS: Final[int] = 40
@@ -57,9 +60,11 @@ _MAXIMUM_PRICE: Final[Decimal] = Decimal(1000000000000)
 _ASCII_SPACE: Final[int] = 0x20
 _ASCII_DELETE: Final[int] = 0x7F
 _MODEL_ID_PARTS: Final[int] = 2
+_MAXIMUM_UTC_CLOCK: Final[int] = 2359
+_MAXIMUM_UTC_MINUTE: Final[int] = 59
 
 _MODEL_PART = r"[A-Za-z0-9](?:[A-Za-z0-9._:-]*[A-Za-z0-9])?"
-_MODEL_ID = re.compile(rf"^(?P<vendor>{_MODEL_PART})/(?P<model>{_MODEL_PART})$")
+_MODEL_ID = re.compile(rf"^(?P<vendor>~?{_MODEL_PART})/(?P<model>{_MODEL_PART})$")
 _SOURCE_TOKEN = re.compile(r"^[a-z][a-z0-9_]*$")
 _PRICE_TEXT = re.compile(r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]{1,3})?$")
 
@@ -85,7 +90,7 @@ class OpenRouterCatalogError(OpenRouterError):
 
 
 class OpenRouterDuplicateModelError(OpenRouterCatalogError):
-    """Report duplicate exact model identifiers in one catalog snapshot."""
+    """Report duplicate rows for the selected exact model identifier."""
 
     def __init__(self) -> None:
         """Create the stable safe duplicate-model error."""
@@ -156,37 +161,72 @@ class OpenRouterPriceUnit(Enum):
     OUTPUT_TOKEN = "output_token"  # noqa: S105 - This is a usage unit.
     CACHED_INPUT_TOKEN = "cached_input_token"  # noqa: S105 - Usage unit.
     CACHE_WRITE_INPUT_TOKEN = "cache_write_input_token"  # noqa: S105 - Usage unit.
-    IMAGE = "image"
+    CACHE_WRITE_1H_INPUT_TOKEN = "cache_write_1h_input_token"  # noqa: S105
+    INPUT_IMAGE = "input_image"
+    OUTPUT_IMAGE = "output_image"
+    IMAGE_TOKEN = "image_token"  # noqa: S105 - This is a usage unit.
     REQUEST = "request"
     WEB_SEARCH = "web_search"
     INTERNAL_REASONING_TOKEN = "internal_reasoning_token"  # noqa: S105 - Unit.
     AUDIO_INPUT_TOKEN = "audio_input_token"  # noqa: S105 - Usage unit.
+    AUDIO_OUTPUT_TOKEN = "audio_output_token"  # noqa: S105 - Usage unit.
+    CACHED_AUDIO_INPUT_TOKEN = "cached_audio_input_token"  # noqa: S105
 
 
 @dataclass(frozen=True, slots=True)
 class OpenRouterReasoningFacts:
-    """Contain explicit OpenRouter reasoning support and requirement facts."""
+    """Contain explicit OpenRouter reasoning support and configuration facts.
+
+    ``source_configuration_available`` distinguishes a catalog reasoning object
+    from support that only follows from ``supported_parameters``. A
+    ``supported_efforts`` value of ``None`` is an unrestricted source value
+    only when that source configuration is available.
+    """
 
     supported: bool
     mandatory: bool | None
+    source_configuration_available: bool = False
+    default_enabled: bool | None = None
+    default_effort: str | None = None
+    supported_efforts: tuple[str, ...] | None = None
+    supports_max_tokens: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class OpenRouterPriceSourceValue:
-    """Contain one exact non-negative USD price from an OpenRouter row."""
+    """Contain the exact non-negative USD price for one named source unit."""
 
     unit: OpenRouterPriceUnit
     amount: Decimal
     source_field: str
-    currency: str = "USD"
+    currency: Literal["USD"] = "USD"
+
+
+@dataclass(frozen=True, slots=True)
+class OpenRouterPriceOverride:
+    """Contain one conditional OpenRouter price-source override.
+
+    All non-null conditions apply together. Overrides stay in catalog order,
+    where a later matching value replaces an earlier value for the same unit.
+    """
+
+    minimum_prompt_tokens: int | None
+    utc_start: int | None
+    utc_end: int | None
+    price_source_values: tuple[OpenRouterPriceSourceValue, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class OpenRouterModelFacts:
-    """Contain immutable source facts for one public OpenRouter model row."""
+    """Contain immutable source facts for one public OpenRouter model row.
+
+    ``model_id`` is the routable identifier. ``canonical_slug`` is the exact
+    permanent source slug when the catalog supplies one. The parser does not
+    derive a product model name from either identifier.
+    """
 
     model_id: str
-    canonical_source_name: str
+    canonical_slug: str | None
     display_source_name: str | None
     input_modalities: tuple[OpenRouterInputModality, ...]
     output_modalities: tuple[OpenRouterOutputModality, ...]
@@ -196,21 +236,7 @@ class OpenRouterModelFacts:
     reasoning: OpenRouterReasoningFacts
     supported_constraints: tuple[OpenRouterConstraint, ...]
     price_source_values: tuple[OpenRouterPriceSourceValue, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class OpenRouterCatalog:
-    """Contain one validated immutable public OpenRouter catalog snapshot."""
-
-    models: tuple[OpenRouterModelFacts, ...]
-
-    def model(self, model_id_or_url: str) -> OpenRouterModelFacts:
-        """Return one exact model or raise a stable safe missing-model error."""
-        model_id = normalize_openrouter_model_reference(model_id_or_url)
-        for model in self.models:
-            if model.model_id == model_id:
-                return model
-        raise OpenRouterModelNotFoundError
+    price_overrides: tuple[OpenRouterPriceOverride, ...]
 
 
 _INPUT_MODALITIES: Final[dict[str, OpenRouterInputModality]] = {
@@ -259,16 +285,21 @@ _PRICE_FIELDS: Final[dict[str, OpenRouterPriceUnit]] = {
     "completion": OpenRouterPriceUnit.OUTPUT_TOKEN,
     "input_cache_read": OpenRouterPriceUnit.CACHED_INPUT_TOKEN,
     "input_cache_write": OpenRouterPriceUnit.CACHE_WRITE_INPUT_TOKEN,
-    "image": OpenRouterPriceUnit.IMAGE,
+    "input_cache_write_1h": OpenRouterPriceUnit.CACHE_WRITE_1H_INPUT_TOKEN,
+    "image": OpenRouterPriceUnit.INPUT_IMAGE,
+    "image_output": OpenRouterPriceUnit.OUTPUT_IMAGE,
+    "image_token": OpenRouterPriceUnit.IMAGE_TOKEN,
     "request": OpenRouterPriceUnit.REQUEST,
     "web_search": OpenRouterPriceUnit.WEB_SEARCH,
     "internal_reasoning": OpenRouterPriceUnit.INTERNAL_REASONING_TOKEN,
     "audio": OpenRouterPriceUnit.AUDIO_INPUT_TOKEN,
+    "audio_output": OpenRouterPriceUnit.AUDIO_OUTPUT_TOKEN,
+    "input_audio_cache": OpenRouterPriceUnit.CACHED_AUDIO_INPUT_TOKEN,
 }
 
 
 def normalize_openrouter_model_reference(value: str) -> str:
-    """Return an exact ``vendor/model`` identifier from one safe reference.
+    """Return an exact ``vendor/model`` or ``~vendor/model`` identifier.
 
     The input can be an identifier or an HTTPS URL with the exact
     ``openrouter.ai`` authority. Supported URL paths are ``/vendor/model`` and
@@ -322,19 +353,24 @@ def _model_id_from_url(value: str) -> str:
     return "/".join(path_parts)
 
 
-def parse_openrouter_catalog_snapshot(
+def parse_openrouter_model_snapshot(
     snapshot: bytes | str,
-) -> OpenRouterCatalog:
-    """Parse one bounded JSON catalog snapshot without network access.
+    model_id_or_url: str,
+) -> OpenRouterModelFacts:
+    """Parse one selected model from a bounded catalog snapshot.
 
     The UTF-8 snapshot can contain at most 8 MiB, 10,000 model rows, 200,000
     JSON nodes, 10 container levels, 10,000 list items, and 128 object members.
-    Duplicate JSON members and duplicate exact model identifiers are invalid.
+    Duplicate JSON members and duplicate rows for the selected exact model are
+    invalid. The parser maps and validates model fields only in the selected
+    row. Snapshot-wide JSON safety bounds still apply to all rows.
     """
+    model_id = normalize_openrouter_model_reference(model_id_or_url)
     raw = _snapshot_bytes(snapshot)
     try:
-        return _decode_catalog(raw)
-    except OpenRouterDuplicateModelError:
+        _preflight_json_bounds(raw)
+        return _decode_model(raw, model_id)
+    except OpenRouterDuplicateModelError, OpenRouterModelNotFoundError:
         raise
     except (
         json.JSONDecodeError,
@@ -346,7 +382,7 @@ def parse_openrouter_catalog_snapshot(
         raise OpenRouterCatalogError from None
 
 
-def _decode_catalog(raw: bytes) -> OpenRouterCatalog:
+def _decode_model(raw: bytes, model_id: str) -> OpenRouterModelFacts:
     decoded = json.loads(
         raw,
         parse_float=Decimal,
@@ -364,21 +400,109 @@ def _decode_catalog(raw: bytes) -> OpenRouterCatalog:
         raise _InvalidCatalogError
     rows = cast("list[object]", data)
 
-    seen: set[str] = set()
-    models: list[OpenRouterModelFacts] = []
+    selected_rows: list[dict[str, object]] = []
     for value in rows:
-        if not isinstance(value, dict):
-            raise _InvalidCatalogError
-        facts = _model_facts(cast("dict[str, object]", value))
-        if facts.model_id in seen:
+        if isinstance(value, dict):
+            row = cast("dict[str, object]", value)
+            if row.get("id") == model_id:
+                selected_rows.append(row)
+        if len(selected_rows) > 1:
             raise OpenRouterDuplicateModelError
-        seen.add(facts.model_id)
-        models.append(facts)
-    return OpenRouterCatalog(tuple(models))
+    if not selected_rows:
+        raise OpenRouterModelNotFoundError
+    return _model_facts(selected_rows[0], model_id)
 
 
 class _InvalidCatalogError(Exception):
     """Mark one internal catalog validation failure."""
+
+
+@dataclass(slots=True)
+class _JsonContainerScan:
+    """Track one JSON container without allocating its decoded values."""
+
+    opener: int
+    separators: int = 0
+
+
+def _preflight_json_bounds(raw: bytes) -> None:  # noqa: C901, PLR0912, PLR0915
+    """Reject allocation-heavy JSON shapes before the standard decoder runs."""
+    containers: list[_JsonContainerScan] = []
+    nodes = 0
+    index = 0
+    while index < len(raw):
+        byte = raw[index]
+        if byte in b" \t\r\n":
+            index += 1
+            continue
+        if byte == ord('"'):
+            string_end = _json_string_end(raw, index + 1)
+            following = string_end + 1
+            while following < len(raw) and raw[following] in b" \t\r\n":
+                following += 1
+            maximum_raw_bytes = (
+                _MAXIMUM_JSON_KEY_CHARACTERS * _MAXIMUM_JSON_CHARACTER_SOURCE_BYTES
+                if following < len(raw) and raw[following] == ord(":")
+                else _MAXIMUM_JSON_STRING_CHARACTERS
+                * _MAXIMUM_JSON_CHARACTER_SOURCE_BYTES
+            )
+            if string_end - index - 1 > maximum_raw_bytes:
+                raise _InvalidCatalogError
+            if not (following < len(raw) and raw[following] == ord(":")):
+                nodes += 1
+            index = string_end + 1
+        elif byte in {ord("["), ord("{")}:
+            nodes += 1
+            containers.append(_JsonContainerScan(opener=byte))
+            if len(containers) > _MAXIMUM_CONTAINER_DEPTH:
+                raise _InvalidCatalogError
+            index += 1
+        elif byte in {ord("]"), ord("}")}:
+            expected = ord("[") if byte == ord("]") else ord("{")
+            if not containers or containers[-1].opener != expected:
+                raise _InvalidCatalogError
+            containers.pop()
+            index += 1
+        elif byte == ord(","):
+            if not containers:
+                raise _InvalidCatalogError
+            container = containers[-1]
+            container.separators += 1
+            maximum = (
+                _MAXIMUM_CONTAINER_ITEMS
+                if container.opener == ord("[")
+                else _MAXIMUM_OBJECT_MEMBERS
+            )
+            if container.separators >= maximum:
+                raise _InvalidCatalogError
+            index += 1
+        elif byte == ord(":"):
+            index += 1
+        else:
+            token_end = index + 1
+            while token_end < len(raw) and raw[token_end] not in b" \t\r\n,]}:":
+                token_end += 1
+            if token_end - index > _MAXIMUM_NUMBER_DIGITS + 8:
+                raise _InvalidCatalogError
+            nodes += 1
+            index = token_end
+        if nodes > _MAXIMUM_JSON_NODES:
+            raise _InvalidCatalogError
+    if containers:
+        raise _InvalidCatalogError
+
+
+def _json_string_end(raw: bytes, start: int) -> int:
+    escaped = False
+    for index in range(start, len(raw)):
+        byte = raw[index]
+        if escaped:
+            escaped = False
+        elif byte == ord("\\"):
+            escaped = True
+        elif byte == ord('"'):
+            return index
+    raise _InvalidCatalogError
 
 
 def _snapshot_bytes(snapshot: bytes | str) -> bytes:
@@ -445,12 +569,8 @@ def _validate_json_bounds(root: object) -> None:  # noqa: C901, PLR0912
             raise _InvalidCatalogError
 
 
-def _model_facts(row: dict[str, object]) -> OpenRouterModelFacts:
-    model_id_value = row.get("id")
-    if not isinstance(model_id_value, str):
-        raise _InvalidCatalogError
-    model_id = _validated_model_id(model_id_value, _InvalidCatalogError)
-    canonical_name = model_id.split("/", 1)[1]
+def _model_facts(row: dict[str, object], model_id: str) -> OpenRouterModelFacts:
+    canonical_slug = _optional_model_id(row.get("canonical_slug"))
     display_name = _optional_display_name(row.get("name"))
     architecture = _optional_object(row.get("architecture"))
     input_values = _source_tokens(
@@ -490,9 +610,10 @@ def _model_facts(row: dict[str, object]) -> OpenRouterModelFacts:
         top_provider.get("max_completion_tokens"),
         row.get("max_completion_tokens"),
     )
+    price_source_values, price_overrides = _pricing_facts(row.get("pricing"))
     return OpenRouterModelFacts(
         model_id=model_id,
-        canonical_source_name=canonical_name,
+        canonical_slug=canonical_slug,
         display_source_name=display_name,
         input_modalities=tuple(
             modality
@@ -509,7 +630,8 @@ def _model_facts(row: dict[str, object]) -> OpenRouterModelFacts:
         maximum_output_tokens=maximum_output,
         reasoning=reasoning,
         supported_constraints=constraints,
-        price_source_values=_price_source_values(row.get("pricing")),
+        price_source_values=price_source_values,
+        price_overrides=price_overrides,
     )
 
 
@@ -528,22 +650,27 @@ def _validated_model_id(value: str, error_type: type[Exception]) -> str:
     return value
 
 
+def _optional_model_id(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _InvalidCatalogError
+    return _validated_model_id(value, _InvalidCatalogError)
+
+
 def _optional_display_name(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
         raise _InvalidCatalogError
-    display_name = value.strip()
     if (
-        not display_name
-        or len(display_name) > _MAXIMUM_DISPLAY_NAME_CHARACTERS
-        or any(
-            unicodedata.category(character).startswith("C")
-            for character in display_name
-        )
+        not value
+        or value != value.strip()
+        or len(value) > _MAXIMUM_DISPLAY_NAME_CHARACTERS
+        or any(unicodedata.category(character).startswith("C") for character in value)
     ):
         raise _InvalidCatalogError
-    return display_name
+    return value
 
 
 def _optional_object(value: object) -> dict[str, object]:
@@ -588,39 +715,91 @@ def _reasoning_facts(
     if not isinstance(value, dict):
         raise _InvalidCatalogError
     reasoning = cast("dict[str, object]", value)
-    mandatory_value = reasoning.get("mandatory")
-    if mandatory_value is not None and not isinstance(mandatory_value, bool):
-        raise _InvalidCatalogError
+    mandatory_value = _optional_bool(reasoning.get("mandatory"))
+    default_enabled = _optional_bool(reasoning.get("default_enabled"))
+    supports_max_tokens = _optional_bool(reasoning.get("supports_max_tokens"))
+    default_effort = _optional_source_token(reasoning.get("default_effort"))
+    supported_efforts_value = reasoning.get("supported_efforts")
+    supported_efforts = (
+        None
+        if supported_efforts_value is None
+        else _source_tokens(
+            supported_efforts_value,
+            maximum=_MAXIMUM_REASONING_EFFORTS,
+        )
+    )
     return OpenRouterReasoningFacts(
         supported=True,
         mandatory=mandatory_value,
+        source_configuration_available=True,
+        default_enabled=default_enabled,
+        default_effort=default_effort,
+        supported_efforts=supported_efforts,
+        supports_max_tokens=supports_max_tokens,
     )
+
+
+def _optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise _InvalidCatalogError
+    return value
+
+
+def _optional_source_token(value: object) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or len(value) > _MAXIMUM_SOURCE_TOKEN_CHARACTERS
+        or _SOURCE_TOKEN.fullmatch(value) is None
+    ):
+        raise _InvalidCatalogError
+    return value
 
 
 def _preferred_positive_integer(*values: object) -> int | None:
     for value in values:
         if value is None:
             continue
-        if isinstance(value, bool):
+        if isinstance(value, bool) or not isinstance(value, int):
             raise _InvalidCatalogError
-        if isinstance(value, int):
-            number = value
-        elif isinstance(value, str) and value.isascii() and value.isdecimal():
-            number = int(value)
-        else:
-            raise _InvalidCatalogError
+        number = value
         if number < 1 or number > _MAXIMUM_TOKEN_BOUND:
             raise _InvalidCatalogError
         return number
     return None
 
 
-def _price_source_values(value: object) -> tuple[OpenRouterPriceSourceValue, ...]:
+def _pricing_facts(
+    value: object,
+) -> tuple[
+    tuple[OpenRouterPriceSourceValue, ...],
+    tuple[OpenRouterPriceOverride, ...],
+]:
     if value is None:
-        return ()
+        return (), ()
     if not isinstance(value, dict):
         raise _InvalidCatalogError
     pricing = cast("dict[str, object]", value)
+    overrides_value = pricing.get("overrides")
+    overrides: tuple[OpenRouterPriceOverride, ...]
+    if overrides_value is None:
+        overrides = ()
+    elif isinstance(overrides_value, list):
+        override_items = cast("list[object]", overrides_value)
+        if len(override_items) > _MAXIMUM_PRICE_OVERRIDES:
+            raise _InvalidCatalogError
+        overrides = tuple(_price_override(item) for item in override_items)
+    else:
+        raise _InvalidCatalogError
+    return _price_source_values(pricing), overrides
+
+
+def _price_source_values(
+    pricing: dict[str, object],
+) -> tuple[OpenRouterPriceSourceValue, ...]:
     prices: list[OpenRouterPriceSourceValue] = []
     for source_field, unit in _PRICE_FIELDS.items():
         raw_amount = pricing.get(source_field)
@@ -637,14 +816,51 @@ def _price_source_values(value: object) -> tuple[OpenRouterPriceSourceValue, ...
     return tuple(prices)
 
 
-def _price_amount(value: object) -> Decimal:
-    if isinstance(value, bool):
+def _price_override(value: object) -> OpenRouterPriceOverride:
+    if not isinstance(value, dict):
         raise _InvalidCatalogError
-    if isinstance(value, int):
-        amount = Decimal(value)
-    elif isinstance(value, Decimal):
-        amount = value
-    elif isinstance(value, str) and _PRICE_TEXT.fullmatch(value) is not None:
+    override = cast("dict[str, object]", value)
+    minimum_prompt_tokens = _optional_non_negative_integer(
+        override.get("min_prompt_tokens")
+    )
+    utc_start = _optional_utc_clock(override.get("utc_start"))
+    utc_end = _optional_utc_clock(override.get("utc_end"))
+    if (utc_start is None) != (utc_end is None) or (
+        utc_start is not None and utc_start == utc_end
+    ):
+        raise _InvalidCatalogError
+    prices = _price_source_values(override)
+    if (minimum_prompt_tokens is None and utc_start is None) or not prices:
+        raise _InvalidCatalogError
+    return OpenRouterPriceOverride(
+        minimum_prompt_tokens=minimum_prompt_tokens,
+        utc_start=utc_start,
+        utc_end=utc_end,
+        price_source_values=prices,
+    )
+
+
+def _optional_non_negative_integer(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _InvalidCatalogError
+    if value < 0 or value > _MAXIMUM_TOKEN_BOUND:
+        raise _InvalidCatalogError
+    return value
+
+
+def _optional_utc_clock(value: object) -> int | None:
+    number = _optional_non_negative_integer(value)
+    if number is not None and (
+        number > _MAXIMUM_UTC_CLOCK or number % 100 > _MAXIMUM_UTC_MINUTE
+    ):
+        raise _InvalidCatalogError
+    return number
+
+
+def _price_amount(value: object) -> Decimal:
+    if isinstance(value, str) and _PRICE_TEXT.fullmatch(value) is not None:
         amount = Decimal(value)
     else:
         raise _InvalidCatalogError
