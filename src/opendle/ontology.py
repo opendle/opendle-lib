@@ -225,11 +225,14 @@ class _UrllibTransport:
                     body=response.read(self._maximum_success_response_bytes + 1),
                 )
         except HTTPError as error:
-            return OntologyTransportResponse(
-                status=error.code,
-                headers=dict(error.headers.items()) if error.headers else {},
-                body=error.read(_MAXIMUM_ERROR_BODY_BYTES + 1),
-            )
+            try:
+                return OntologyTransportResponse(
+                    status=error.code,
+                    headers=dict(error.headers.items()) if error.headers else {},
+                    body=error.read(_MAXIMUM_ERROR_BODY_BYTES + 1),
+                )
+            finally:
+                error.close()
         except URLError:
             raise
 

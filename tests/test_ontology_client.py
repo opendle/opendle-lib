@@ -1021,16 +1021,20 @@ def test_default_standard_library_transport_handles_success_and_http_error(
             "details": {},
         }
     ).encode()
+    http_errors: list[HTTPError] = []
 
     def fail(*_args: object, **_kwargs: object) -> object:
         url = "http://localhost:8000"
         headers = Message()
         headers["Content-Type"] = "application/json"
-        raise HTTPError(url, 400, "bad", headers, BytesIO(error_body))
+        error = HTTPError(url, 400, "bad", headers, BytesIO(error_body))
+        http_errors.append(error)
+        raise error
 
     monkeypatch.setattr(ontology_module, "_open_without_redirects", fail)
     with pytest.raises(OntologyValidationError):
         subject.get_service()
+    assert http_errors[0].closed
 
 
 def test_success_response_bound_accepts_exact_custom_transport_body() -> None:
