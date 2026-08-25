@@ -16,15 +16,20 @@ The list is a planning proposal. It is not a promise to move every item.
 The package must contain only behavior that has the same rules, invariants,
 and change reason in more than one consumer.
 
-The package now contains OIDC request primitives and the accepted Python Router
-model contract and stateless multi-turn harness core. Other items in this
-document remain proposals until their shared boundary is accepted.
+The package now contains the complete shared OIDC protocol client, general
+canonical JSON contracts, the official Router and Ontology clients, Ontology
+agent helpers, the OpenRouter snapshot parser, the Router model contract, and
+the stateless multi-turn harness. Other items in this document remain
+proposals until their shared boundary is accepted.
 
 ## Consumer status
 
-LLM Router and Ontology declare `opendle-lib` and use its OIDC primitives. The
-new Router harness API has no migrated consumer in this task because it is a
-new pre-1.0 contract.
+LLM Router and Ontology declare `opendle-lib`. They use its OIDC request
+primitives and can replace their duplicate discovery, token exchange, JWKS,
+and ID-token verification code with the complete shared client. Ontology also
+uses the Router client, Ontology client contracts, canonical JSON, and value
+fingerprints. LLM Router uses the Router contracts, OpenRouter parser, and
+client proof paths. The Router harness API does not yet have a migrated host.
 
 - `fj2`, `crewday`, `llmrouter`, and `ontology` have backend code that can
   provide extraction evidence.
@@ -269,7 +274,7 @@ provide a universal authorization policy. Each service owns its grants.
 
 ### 6. Human authentication protocol helpers
 
-This is a possible candidate with a narrow boundary.
+The narrow shared OIDC boundary is implemented.
 
 The shared Pocket ID design applies to `llmrouter` and `ontology`. Both use
 OpenID Connect for administrator authentication, while each application keeps
@@ -277,10 +282,16 @@ its own local grants and sessions. `xbot` explicitly owns a separate product
 passkey identity. `fj2` and `crewday` have their own user authentication
 requirements.
 
-Possible library work:
+Implemented library work:
 
-- OIDC issuer, audience, state, nonce, PKCE, and time validation;
-- immutable issuer and subject identity values;
+- bounded discovery, code exchange, JWKS reads, and RS256 verification;
+- OIDC issuer, audience, authorized-party, state, nonce, PKCE, and time checks;
+- `client_secret_basic` and `client_secret_post` selection;
+- immutable verified issuer and subject values with read-only claims;
+- strict bounded no-redirect HTTP, headers, and JSON;
+
+Possible later work:
+
 - recent-authentication checks;
 - local-session and revocation protocols;
 - WebAuthn challenge replay and origin-validation primitives, only if a second
@@ -810,7 +821,6 @@ runtime API.
 
 Possible library or repository-tooling work:
 
-- strict JSON loading with duplicate-key rejection;
 - OpenAPI and JSON Schema normalization;
 - contract digest calculation;
 - compatibility comparison results;
@@ -861,8 +871,8 @@ that the records or permission rules should be shared.
 
 ## Suggested implementation order
 
-1. Add common value types, clocks, bounds, errors, canonical JSON, and safe
-   redaction.
+1. Add common value types, clocks, bounds, errors, and safe redaction. General
+   canonical JSON is implemented in `opendle.contracts`.
 2. Add idempotency and request-fingerprint protocols with in-memory test
    implementations.
 3. Add cryptographic primitives and service-token claim validation.
@@ -870,12 +880,11 @@ that the records or permission rules should be shared.
 5. Add contract validation tooling and fixture checks for service boundaries.
 6. Add storage and attachment ports after the first two consumers agree on
    upload, integrity, and cleanup states.
-7. Add OIDC helpers for the LLM Router and Ontology administrator flow only
-   after their integration tests define the exact contract.
+7. Maintain the implemented OIDC migrations in LLM Router and Ontology.
 8. Add optional FastAPI and Django adapters only when two consumers need the
    same adapter behavior.
-9. Add the accepted Router transport adapter after the native client task
-   defines and verifies the live integration.
+9. Maintain and extend the implemented Router client transport only after two
+   consumers need the same new behavior.
 10. Revisit webhook, notification, privacy, and financial value helpers after
     more than one consumer has a stable implementation.
 

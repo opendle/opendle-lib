@@ -1,5 +1,6 @@
 """Shared Python backend building blocks for OpenDLE projects."""
 
+from opendle.contracts import JsonObject, JsonValue, canonical_json_bytes
 from opendle.harness import (
     CompactionError,
     CompactionFailureMode,
@@ -30,13 +31,24 @@ from opendle.harness import (
     run_stored,
 )
 from opendle.oidc import (
+    OidcClaimValue,
+    OidcClient,
+    OidcClientAuthenticationMethod,
+    OidcError,
+    OidcHTTPError,
+    OidcMetadata,
+    OidcProtocolError,
+    OidcResponseLimitError,
+    OidcSigningKeys,
+    OidcTransport,
+    OidcTransportError,
+    OidcTransportResponse,
+    VerifiedIdToken,
     build_authorization_code_url,
     pkce_s256_challenge,
     validate_canonical_token,
 )
 from opendle.ontology import (
-    JsonObject,
-    JsonValue,
     OntologyAuthenticationError,
     OntologyAuthorizationError,
     OntologyClient,
@@ -52,7 +64,6 @@ from opendle.ontology import (
     OntologyTransportResponse,
     OntologyUnavailableError,
     OntologyValidationError,
-    canonical_json_bytes,
     fingerprint_occurrence_selector,
     value_fingerprint,
     value_occurrence_selector,
@@ -220,6 +231,18 @@ __all__ = [
     "ModelStreamTextDelta",
     "ModelStreamToolCall",
     "ObservedRequirement",
+    "OidcClaimValue",
+    "OidcClient",
+    "OidcClientAuthenticationMethod",
+    "OidcError",
+    "OidcHTTPError",
+    "OidcMetadata",
+    "OidcProtocolError",
+    "OidcResponseLimitError",
+    "OidcSigningKeys",
+    "OidcTransport",
+    "OidcTransportError",
+    "OidcTransportResponse",
     "OntologyAgentHelpers",
     "OntologyAgentOutputLimitError",
     "OntologyAuthenticationError",
@@ -306,6 +329,7 @@ __all__ = [
     "UsageItem",
     "UsageUnit",
     "UserMessage",
+    "VerifiedIdToken",
     "Workspace",
     "WorkspacePage",
     "build_authorization_code_url",

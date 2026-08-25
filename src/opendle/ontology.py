@@ -7,15 +7,24 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol, Self, cast, override
-from urllib.error import HTTPError, URLError
+from typing import Literal, Protocol, cast
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-if TYPE_CHECKING:
-    from http.client import HTTPMessage
+from opendle._internal.http import (
+    HeaderLimitError,
+    HeaderProtocolError,
+    UrllibHttpClient,
+    normalize_headers,
+)
+from opendle._internal.json import StrictJsonError, strict_json_loads
+from opendle._internal.pages import (
+    CursorCycleError,
+    PageLimitError,
+    iterate_cursor_pages,
+)
+from opendle.contracts import JsonObject, JsonValue, canonical_json_bytes
 
 __all__ = [
     "JsonObject",
@@ -41,12 +50,9 @@ __all__ = [
     "value_occurrence_selector",
 ]
 
-type JsonValue = bool | int | float | str | list[JsonValue] | JsonObject | None
-type JsonObject = dict[str, JsonValue]
 type WriteVisibility = Literal["eventual", "read_after_write"]
 type OntologyMediaType = Literal["application/json", "application/yaml"]
 
-_MAXIMUM_SAFE_INTEGER = 9_007_199_254_740_991
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 _JSON_CONTENT_TYPE: Literal["application/json"] = "application/json"
 _YAML_CONTENT_TYPE: Literal["application/yaml"] = "application/yaml"
@@ -70,14 +76,17 @@ _MAXIMUM_ERROR_DETAILS = 20
 _MAXIMUM_ERROR_FIELD_LENGTH = 200
 _MAXIMUM_ERROR_MESSAGE_LENGTH = 500
 _DEFAULT_MAXIMUM_SUCCESS_RESPONSE_BYTES = 16_777_216
-_PLAIN_DECIMAL_MINIMUM = 1e-6
-_PLAIN_DECIMAL_LIMIT = 1e21
 _MAXIMUM_PORT = 65_535
 _MAXIMUM_FILE_NAME_LENGTH = 255
 _MAXIMUM_MEDIA_TYPE_LENGTH = 200
 _MAXIMUM_IMPACT_CONFIRMATION_LENGTH = 1000
 _C1_CONTROL_CHARACTER_END = 0x9F
 _MEDIA_TYPE_PATTERN = re.compile(r"^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$")
+_MAXIMUM_RESPONSE_HEADERS = 100
+_MAXIMUM_RESPONSE_HEADER_BYTES = 65_536
+_CRITICAL_RESPONSE_HEADERS = frozenset(
+    {"content-type", "content-length", "content-encoding"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,25 +110,6 @@ class OntologyTransport(Protocol):
         timeout: float,
     ) -> OntologyTransportResponse:
         """Send one request and return its status, headers, and body."""
-        ...
-
-
-class _URLResponse(Protocol):
-    """Supply the standard-library response operations that the client uses."""
-
-    status: int
-    headers: Mapping[str, str]
-
-    def __enter__(self) -> Self:
-        """Enter the response context."""
-        ...
-
-    def __exit__(self, *args: object) -> None:
-        """Exit the response context."""
-        ...
-
-    def read(self, amount: int | None = None) -> bytes:
-        """Read all bytes or at most the selected amount."""
         ...
 
 
@@ -201,10 +191,14 @@ class OntologyUnavailableError(OntologyHTTPError):
 class _UrllibTransport:
     """Send requests through the Python standard library."""
 
-    __slots__ = ("_maximum_success_response_bytes",)
+    __slots__ = ("_http",)
 
     def __init__(self, maximum_success_response_bytes: int) -> None:
-        self._maximum_success_response_bytes = maximum_success_response_bytes
+        self._http = UrllibHttpClient(
+            maximum_success_response_bytes,
+            maximum_error_response_bytes=_MAXIMUM_ERROR_BODY_BYTES,
+            use_environment_proxy=True,
+        )
 
     def request(
         self,
@@ -214,49 +208,12 @@ class _UrllibTransport:
         body: bytes | None,
         timeout: float,
     ) -> OntologyTransportResponse:
-        request = Request(  # noqa: S310 - The client validates the URL scheme.
-            url, data=body, headers=dict(headers), method=method
+        response = self._http.request(method, url, headers, body, timeout)
+        return OntologyTransportResponse(
+            response.status,
+            _normalized_response_headers(response.headers),
+            response.body,
         )
-        try:
-            with _open_without_redirects(request, timeout=timeout) as response:
-                return OntologyTransportResponse(
-                    status=response.status,
-                    headers=dict(response.headers.items()),
-                    body=response.read(self._maximum_success_response_bytes + 1),
-                )
-        except HTTPError as error:
-            try:
-                return OntologyTransportResponse(
-                    status=error.code,
-                    headers=dict(error.headers.items()) if error.headers else {},
-                    body=error.read(_MAXIMUM_ERROR_BODY_BYTES + 1),
-                )
-            finally:
-                error.close()
-        except URLError:
-            raise
-
-
-class _RejectRedirectHandler(HTTPRedirectHandler):
-    """Reject redirects before they can forward a service key."""
-
-    @override
-    def redirect_request(
-        self,
-        req: Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: HTTPMessage,
-        newurl: str,
-    ) -> None:
-        """Reject every redirect response."""
-        del req, fp, code, msg, headers, newurl
-
-
-def _open_without_redirects(request: Request, *, timeout: float) -> _URLResponse:
-    opener = build_opener(_RejectRedirectHandler())
-    return cast("_URLResponse", opener.open(request, timeout=timeout))
 
 
 class OntologyClient:
@@ -994,9 +951,8 @@ class OntologyClient:
         ):
             msg = "The Ontology page bound must be a positive integer."
             raise ValueError(msg)
-        cursor = initial_cursor
-        seen: set[str] = {cursor} if cursor is not None else set()
-        for _page_number in range(page_bound):
+
+        def load(cursor: str | None) -> JsonObject:
             page = fetch(cursor)
             for field in item_fields:
                 if not isinstance(page.get(field), list):
@@ -1008,16 +964,21 @@ class OntologyClient:
             ):
                 msg = "The Ontology page has an invalid next cursor."
                 raise OntologyProtocolError(msg)
-            if next_cursor is not None and next_cursor in seen:
-                msg = "The Ontology cursor sequence contains a cycle."
-                raise OntologyProtocolError(msg)
-            yield page
-            if next_cursor is None:
-                return
-            seen.add(next_cursor)
-            cursor = next_cursor
-        msg = "The Ontology cursor sequence exceeds the caller page bound."
-        raise OntologyPageLimitError(msg)
+            return page
+
+        try:
+            yield from iterate_cursor_pages(
+                load,
+                lambda page: cast("str | None", page.get("nextCursor")),
+                maximum_pages=page_bound,
+                initial_cursor=initial_cursor,
+            )
+        except CursorCycleError:
+            msg = "The Ontology cursor sequence contains a cycle."
+            raise OntologyProtocolError(msg) from None
+        except PageLimitError:
+            msg = "The Ontology cursor sequence exceeds the caller page bound."
+            raise OntologyPageLimitError(msg) from None
 
     def _service_path(self, *parts: str) -> str:
         return "/".join(
@@ -1101,11 +1062,18 @@ class OntologyClient:
             response = self._transport.request(
                 method, url, headers, body, self._timeout
             )
+        except OntologyError:
+            raise
         except Exception as error:  # noqa: BLE001 - Transports can raise any error.
             safe = _redact_text(str(error), self._service_key)
             msg = f"The Ontology HTTP transport failed: {safe}"
             raise OntologyTransportError(msg) from None
-        _validate_transport_response(response)
+        validated_headers = _validate_transport_response(response)
+        response = OntologyTransportResponse(
+            response.status,
+            validated_headers,
+            response.body,
+        )
         if _HTTP_SUCCESS_MINIMUM <= response.status < _HTTP_SUCCESS_LIMIT:
             if len(response.body) > self._maximum_success_response_bytes:
                 msg = "The Ontology success response exceeds the caller byte bound."
@@ -1130,16 +1098,6 @@ class OntologyClient:
                     parameters.append((name, str(value)))
         suffix = f"?{urlencode(parameters)}" if parameters else ""
         return f"{self._base_url}/{path}{suffix}"
-
-
-def canonical_json_bytes(value: JsonValue) -> bytes:
-    """Return the RFC 8785 canonical JSON encoding of one public value.
-
-    Raises:
-        ValueError: If the value is not an interoperable JSON value.
-
-    """
-    return _canonical_json(value).encode("utf-8")
 
 
 def value_fingerprint(value: JsonValue) -> str:
@@ -1167,81 +1125,6 @@ def fingerprint_occurrence_selector(
     if bag_id is not None:
         selector["bagId"] = bag_id
     return selector
-
-
-def _canonical_json(value: object) -> str:  # noqa: C901, PLR0911
-    if value is None:
-        return "null"
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    if isinstance(value, int):
-        if not -_MAXIMUM_SAFE_INTEGER <= value <= _MAXIMUM_SAFE_INTEGER:
-            msg = "An Ontology JSON integer is outside the interoperable range."
-            raise ValueError(msg)
-        return str(value)
-    if isinstance(value, float):
-        return _canonical_float(value)
-    if isinstance(value, str):
-        _valid_unicode(value)
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    if isinstance(value, list):
-        items = cast("list[object]", value)
-        return "[" + ",".join(_canonical_json(item) for item in items) + "]"
-    if isinstance(value, dict):
-        mapping = cast("dict[object, object]", value)
-        for key in mapping:
-            if not isinstance(key, str):
-                msg = "An Ontology JSON mapping key is not a string."
-                raise TypeError(msg)
-            _valid_unicode(key)
-        string_mapping = cast("dict[str, object]", mapping)
-        keys = sorted(string_mapping, key=lambda key: key.encode("utf-16be"))
-        return (
-            "{"
-            + ",".join(
-                f"{_canonical_json(key)}:{_canonical_json(string_mapping[key])}"
-                for key in keys
-            )
-            + "}"
-        )
-    msg = "The value is not an Ontology JSON-equivalent value."
-    raise ValueError(msg)
-
-
-def _canonical_float(value: float) -> str:
-    if not math.isfinite(value):
-        msg = "An Ontology JSON number must be finite."
-        raise ValueError(msg)
-    if value == 0:
-        return "0"
-    sign = "-" if value < 0 else ""
-    source = repr(abs(value)).lower()
-    if "e" in source:
-        coefficient, exponent_text = source.split("e", 1)
-        exponent = int(exponent_text)
-    else:
-        coefficient = source
-        exponent = 0
-    integer, _dot, fraction = coefficient.partition(".")
-    digits = integer + fraction
-    decimal_position = len(integer) + exponent
-    if _PLAIN_DECIMAL_MINIMUM <= abs(value) < _PLAIN_DECIMAL_LIMIT:
-        if decimal_position <= 0:
-            result = "0." + ("0" * -decimal_position) + digits
-        elif decimal_position >= len(digits):
-            result = digits + ("0" * (decimal_position - len(digits)))
-        else:
-            result = digits[:decimal_position] + "." + digits[decimal_position:]
-        return sign + result.rstrip("0").rstrip(".") if "." in result else sign + result
-    normalized = digits[0]
-    remainder = digits[1:].rstrip("0")
-    if remainder:
-        normalized += "." + remainder
-    scientific_exponent = decimal_position - 1
-    exponent_sign = "+" if scientific_exponent >= 0 else ""
-    return f"{sign}{normalized}e{exponent_sign}{scientific_exponent}"
 
 
 def _ontology_body(
@@ -1272,8 +1155,13 @@ def _http_error(  # noqa: C901 - The public error has fixed validated fields.
         raise OntologyProtocolError(msg)
     _require_content_type(response, _JSON_CONTENT_TYPE)
     try:
-        raw = _strict_json_loads(response.body)
-    except UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError:
+        raw = strict_json_loads(response.body)
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        StrictJsonError,
+        RecursionError,
+    ):
         msg = "The Ontology error response is not valid JSON."
         raise OntologyProtocolError(msg) from None
     if not isinstance(raw, dict):
@@ -1335,58 +1223,22 @@ def _http_error(  # noqa: C901 - The public error has fixed validated fields.
 def _response_object(response: OntologyTransportResponse) -> JsonObject:
     _require_content_type(response, _JSON_CONTENT_TYPE)
     try:
-        raw = _strict_json_loads(response.body)
-    except UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError:
+        raw = strict_json_loads(response.body)
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        StrictJsonError,
+        RecursionError,
+    ):
         msg = "The Ontology success response is not valid JSON."
         raise OntologyProtocolError(msg) from None
     if not isinstance(raw, dict):
         msg = "The Ontology success response is not an object."
         raise OntologyProtocolError(msg)
-    return cast("JsonObject", raw)
+    return raw
 
 
-def _strict_json_loads(body: bytes) -> object:
-    value = cast(
-        "object",
-        json.loads(
-            body,
-            object_pairs_hook=_unique_json_object,
-            parse_constant=_reject_json_constant,
-        ),
-    )
-    _validate_json_unicode(value)
-    return value
-
-
-def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            msg = "An Ontology JSON object has a duplicate key."
-            raise ValueError(msg)
-        result[key] = value
-    return result
-
-
-def _reject_json_constant(value: str) -> object:
-    del value
-    msg = "An Ontology JSON number is not finite."
-    raise ValueError(msg)
-
-
-def _validate_json_unicode(value: object) -> None:
-    if isinstance(value, str):
-        _valid_unicode(value)
-    elif isinstance(value, list):
-        for item in cast("list[object]", value):
-            _validate_json_unicode(item)
-    elif isinstance(value, dict):
-        for key, item in cast("dict[str, object]", value).items():
-            _valid_unicode(key)
-            _validate_json_unicode(item)
-
-
-def _validate_transport_response(response: object) -> None:
+def _validate_transport_response(response: object) -> dict[str, str]:
     if not isinstance(response, OntologyTransportResponse):
         msg = "The Ontology transport returned an invalid response."
         raise OntologyProtocolError(msg)
@@ -1406,6 +1258,25 @@ def _validate_transport_response(response: object) -> None:
     ):
         msg = "The Ontology transport returned an invalid response."
         raise OntologyProtocolError(msg)
+    return _normalized_response_headers(cast("Mapping[str, str]", headers).items())
+
+
+def _normalized_response_headers(
+    items: Iterable[tuple[str, str]],
+) -> dict[str, str]:
+    try:
+        return normalize_headers(
+            items,
+            maximum_count=_MAXIMUM_RESPONSE_HEADERS,
+            maximum_bytes=_MAXIMUM_RESPONSE_HEADER_BYTES,
+            critical_headers=_CRITICAL_RESPONSE_HEADERS,
+        )
+    except HeaderLimitError:
+        msg = "The Ontology response headers exceed the safety bound."
+        raise OntologyResponseLimitError(msg) from None
+    except HeaderProtocolError, TypeError, ValueError:
+        msg = "The Ontology response has invalid headers."
+        raise OntologyProtocolError(msg) from None
 
 
 def _require_content_type(response: OntologyTransportResponse, expected: str) -> None:

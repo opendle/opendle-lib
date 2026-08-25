@@ -12,11 +12,28 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast, override
-from urllib.error import HTTPError
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 from urllib.parse import quote, unquote, urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from opendle._internal.http import (
+    HeaderErrorReason,
+    HeaderLimitError,
+    HeaderProtocolError,
+    UrllibHttpClient,
+    header_value,
+    media_type,
+    normalize_headers,
+)
+from opendle._internal.json import (
+    StrictJsonError,
+    StrictJsonErrorReason,
+    strict_json_loads,
+)
+from opendle._internal.pages import (
+    CursorCycleError,
+    PageLimitError,
+    iterate_cursor_pages,
+)
 from opendle.router import (
     AssignmentSelector,
     AssistantContentPart,
@@ -40,7 +57,8 @@ from opendle.router import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
-    from http.client import HTTPMessage
+
+    from opendle.contracts import JsonObject, JsonValue
 
 __all__ = [
     "Assignment",
@@ -103,17 +121,12 @@ __all__ = [
     "WorkspacePage",
 ]
 
-type JsonValue = (
-    bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
-)
-type JsonObject = dict[str, JsonValue]
 type ModelResponse = ModelCallResult | StructuredModelCallResult
 
 _API_NAME = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _ASSIGNMENT_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _DECIMAL = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
-_HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _RFC3339_TIMESTAMP = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
@@ -149,8 +162,6 @@ _MAXIMUM_SERVICE_KEY = 500
 _MINIMUM_SERVICE_KEY = 32
 _PRINTABLE_ASCII_START = 0x21
 _PRINTABLE_ASCII_END = 0x7E
-_ASCII_SPACE = 0x20
-_ASCII_DELETE = 0x7F
 _CRITICAL_RESPONSE_HEADERS = frozenset(
     {"content-type", "content-length", "content-encoding"}
 )
@@ -663,24 +674,12 @@ class RouterTransport(Protocol):
         ...
 
 
-class _NoRedirect(HTTPRedirectHandler):
-    @override
-    def redirect_request(
-        self,
-        req: Request,
-        fp: object,
-        code: int,
-        msg: str,
-        headers: HTTPMessage,
-        newurl: str,
-    ) -> None:
-        del req, fp, code, msg, headers, newurl
-
-
 class _UrllibTransport:
+    """Adapt the shared private HTTP transport to Router responses."""
+
     def __init__(self, maximum_response_bytes: int) -> None:
-        self._maximum_response_bytes = maximum_response_bytes
-        self._opener = build_opener(ProxyHandler({}), _NoRedirect())
+        self._http = UrllibHttpClient(maximum_response_bytes)
+        self._opener = self._http.opener
 
     def request(
         self,
@@ -690,25 +689,11 @@ class _UrllibTransport:
         body: bytes | None,
         timeout: float,
     ) -> RouterTransportResponse:
-        request = Request(  # noqa: S310 - RouterClient validates the URL scheme.
-            url, data=body, headers=dict(headers), method=method
+        self._http.replace_opener(self._opener)
+        response = self._http.request(method, url, headers, body, timeout)
+        return RouterTransportResponse(
+            response.status, _response_headers(response.headers), response.body
         )
-        try:
-            with self._opener.open(request, timeout=timeout) as response:
-                return RouterTransportResponse(
-                    response.status,
-                    _response_headers(response.headers.raw_items()),
-                    response.read(self._maximum_response_bytes + 1),
-                )
-        except HTTPError as error:
-            try:
-                return RouterTransportResponse(
-                    error.code,
-                    _response_headers(error.headers.raw_items()),
-                    error.read(self._maximum_response_bytes + 1),
-                )
-            finally:
-                error.close()
 
     def stream(
         self,
@@ -718,37 +703,17 @@ class _UrllibTransport:
         body: bytes,
         timeout: float,
     ) -> RouterStreamResponse:
-        request = Request(  # noqa: S310 - RouterClient validates the URL scheme.
-            url, data=body, headers=dict(headers), method=method
-        )
+        self._http.replace_opener(self._opener)
+        response = self._http.stream(method, url, headers, body, timeout)
         try:
-            response = self._opener.open(request, timeout=timeout)
-        except HTTPError as error:
-            try:
-                return RouterStreamResponse(
-                    error.code,
-                    _response_headers(error.headers.raw_items()),
-                    (error.read(self._maximum_response_bytes + 1),),
-                )
-            finally:
-                error.close()
-
-        try:
-            status = response.status
-            response_headers = _response_headers(response.headers.raw_items())
+            response_headers = _response_headers(response.headers)
         except BaseException:
             response.close()
             raise
-
-        def chunks() -> Iterator[bytes]:
-            with response:
-                while chunk := response.read(65_536):
-                    yield chunk
-
         return RouterStreamResponse(
-            status,
+            response.status,
             response_headers,
-            chunks(),
+            response.chunks,
         )
 
 
@@ -1522,16 +1487,19 @@ class RouterClient:
         ):
             msg = "The Router page limit must be positive."
             raise ValueError(msg)
-        current = cursor
-        for _index in range(max_pages):
-            page = load(current)
-            yield page
-            info = page.page
-            if not info.has_more:
-                return
-            current = info.next_cursor
-        msg = "The Router response exceeds the selected page limit."
-        raise RouterPageLimitError(msg)
+        try:
+            yield from iterate_cursor_pages(
+                load,
+                lambda page: page.page.next_cursor if page.page.has_more else None,
+                maximum_pages=max_pages,
+                initial_cursor=cursor,
+            )
+        except CursorCycleError:
+            msg = "The Router cursor sequence contains a cycle."
+            raise RouterProtocolError(msg) from None
+        except PageLimitError:
+            msg = "The Router response exceeds the selected page limit."
+            raise RouterPageLimitError(msg) from None
 
 
 def _model_body(call: ModelCall) -> JsonObject:
@@ -2543,19 +2511,24 @@ def _validate_request_size(size: int) -> None:
 
 def _json_object(value: bytes) -> JsonObject:
     try:
-        parsed = json.loads(
-            value,
-            object_pairs_hook=_unique_json_object,
-            parse_constant=_reject_json_constant,
-        )
-    except RouterProtocolError:
-        raise
+        parsed = strict_json_loads(value)
+    except StrictJsonError as error:
+        messages = {
+            StrictJsonErrorReason.DUPLICATE_KEY: (
+                "The Router response JSON has a duplicate object key."
+            ),
+            StrictJsonErrorReason.NON_FINITE_NUMBER: (
+                "The Router response JSON has a non-finite number."
+            ),
+            StrictJsonErrorReason.INVALID_UNICODE: (
+                "The Router response JSON has invalid Unicode text."
+            ),
+        }
+        raise RouterProtocolError(messages[error.reason]) from None
     except UnicodeDecodeError, json.JSONDecodeError, RecursionError:
         msg = "The Router response is not valid JSON."
         raise RouterProtocolError(msg) from None
-    result = cast("JsonValue", parsed)
-    _validate_json_unicode(result)
-    return _object(result)
+    return _object(parsed)
 
 
 def _safe_json_object(value: bytes, service_key: str | None) -> JsonObject:
@@ -2580,39 +2553,6 @@ def _json_contains_string(value: JsonValue, expected: str) -> bool:
                 return True
             pending.extend(item.values())
     return False
-
-
-def _unique_json_object(pairs: list[tuple[str, JsonValue]]) -> JsonObject:
-    result: JsonObject = {}
-    for key, value in pairs:
-        if key in result:
-            msg = "The Router response JSON has a duplicate object key."
-            raise RouterProtocolError(msg)
-        result[key] = value
-    return result
-
-
-def _reject_json_constant(value: str) -> JsonValue:
-    del value
-    msg = "The Router response JSON has a non-finite number."
-    raise RouterProtocolError(msg)
-
-
-def _validate_json_unicode(value: JsonValue) -> None:
-    pending: list[JsonValue] = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, str):
-            try:
-                item.encode("utf-8")
-            except UnicodeEncodeError:
-                msg = "The Router response JSON has invalid Unicode text."
-                raise RouterProtocolError(msg) from None
-        elif isinstance(item, list):
-            pending.extend(item)
-        elif isinstance(item, dict):
-            pending.extend(item)
-            pending.extend(item.values())
 
 
 def _object(value: JsonValue) -> JsonObject:
@@ -2733,14 +2673,11 @@ def _currency(value: JsonValue) -> str:
 
 
 def _header(headers: Mapping[str, str], name: str) -> str:
-    for key, value in headers.items():
-        if key.lower() == name.lower():
-            return value
-    return ""
+    return header_value(headers, name)
 
 
 def _header_media_type(headers: Mapping[str, str], name: str) -> str:
-    return _header(headers, name).split(";", 1)[0].strip().lower()
+    return media_type(headers, name)
 
 
 def _require_json_media_type(headers: Mapping[str, str]) -> None:
@@ -2751,46 +2688,34 @@ def _require_json_media_type(headers: Mapping[str, str]) -> None:
 
 
 def _response_headers(items: Iterable[tuple[str, str]]) -> dict[str, str]:
-    result: dict[str, str] = {}
-    seen_critical: set[str] = set()
-    total_bytes = 0
-    for count, (name, value) in enumerate(items, start=1):
-        raw_name = cast("object", name)
-        raw_value = cast("object", value)
-        if count > _MAXIMUM_RESPONSE_HEADERS:
-            msg = "The Router response has too many headers."
-            raise RouterResponseLimitError(msg)
-        if not isinstance(raw_name, str) or not isinstance(raw_value, str):
-            msg = "The Router response has an invalid header."
-            raise RouterProtocolError(msg)
-        try:
-            total_bytes += (
-                len(raw_name.encode("utf-8")) + len(raw_value.encode("utf-8")) + 4
-            )
-        except UnicodeEncodeError:
-            msg = "The Router response has an invalid header."
-            raise RouterProtocolError(msg) from None
-        if total_bytes > _MAXIMUM_RESPONSE_HEADER_BYTES:
-            msg = "The Router response headers exceed the byte limit."
-            raise RouterResponseLimitError(msg)
-        if _HTTP_HEADER_NAME.fullmatch(raw_name) is None:
-            msg = "The Router response has an invalid header name."
-            raise RouterProtocolError(msg)
-        if any(
-            (ord(character) < _ASCII_SPACE and character != "\t")
-            or ord(character) == _ASCII_DELETE
-            for character in raw_value
-        ):
-            msg = "The Router response has an invalid header value."
-            raise RouterProtocolError(msg)
-        normalized = raw_name.lower()
-        if normalized in _CRITICAL_RESPONSE_HEADERS:
-            if normalized in seen_critical:
-                msg = "The Router response has a duplicate critical header."
-                raise RouterProtocolError(msg)
-            seen_critical.add(normalized)
-        result[raw_name] = raw_value
-    return result
+    try:
+        return normalize_headers(
+            items,
+            maximum_count=_MAXIMUM_RESPONSE_HEADERS,
+            maximum_bytes=_MAXIMUM_RESPONSE_HEADER_BYTES,
+            critical_headers=_CRITICAL_RESPONSE_HEADERS,
+        )
+    except HeaderLimitError as error:
+        msg = (
+            "The Router response has too many headers."
+            if error.reason is HeaderErrorReason.COUNT_LIMIT
+            else "The Router response headers exceed the byte limit."
+        )
+        raise RouterResponseLimitError(msg) from None
+    except HeaderProtocolError as error:
+        messages = {
+            HeaderErrorReason.INVALID_NAME: (
+                "The Router response has an invalid header name."
+            ),
+            HeaderErrorReason.INVALID_VALUE: (
+                "The Router response has an invalid header value."
+            ),
+            HeaderErrorReason.DUPLICATE: (
+                "The Router response has a duplicate critical header."
+            ),
+        }
+        msg = messages.get(error.reason, "The Router response has an invalid header.")
+        raise RouterProtocolError(msg) from None
 
 
 def _validated_response_headers(headers: Mapping[str, str]) -> dict[str, str]:

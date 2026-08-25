@@ -901,6 +901,20 @@ def test_service_key_page_iteration_has_the_same_strict_bound() -> None:
     assert pages[0].items[0].name == "worker"
 
 
+def test_router_page_iteration_rejects_a_cursor_cycle() -> None:
+    """Map a repeated shared cursor to the Router protocol error."""
+    transport = FakeRouterTransport(
+        [
+            response(200, page([], more=True)),
+            response(200, page([], more=True)),
+        ]
+    )
+    pages = client(transport).iter_workspace_pages(max_pages=3)
+    next(pages)
+    with pytest.raises(RouterProtocolError, match="cursor sequence"):
+        next(pages)
+
+
 _LIST_LIMIT_CASES: tuple[tuple[list[object], Callable[[RouterClient], object]], ...] = (
     (
         [workspace(), workspace("other")],
@@ -2652,6 +2666,36 @@ def test_standard_library_stream_closes_response_when_headers_are_invalid() -> N
     vars(transport)["_opener"] = ResponseOpener()
 
     with pytest.raises(RouterResponseLimitError, match="many headers"):
+        transport.stream("POST", "http://127.0.0.1:8000/v1/x", {}, b"{}", 1)
+    assert response.closed
+
+
+def test_standard_library_stream_closes_response_when_header_access_fails() -> None:
+    """Close an opened response if status or header access raises."""
+
+    class BrokenResponse:
+        headers = Message()
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        @property
+        def status(self) -> int:
+            msg = "broken response"
+            raise RuntimeError(msg)
+
+        def close(self) -> None:
+            self.closed = True
+
+    response = BrokenResponse()
+
+    class ResponseOpener:
+        def open(self, *_args: object, **_kwargs: object) -> object:
+            return response
+
+    transport = cast("RouterTransport", private("_UrllibTransport")(1024))
+    vars(transport)["_opener"] = ResponseOpener()
+    with pytest.raises(RuntimeError, match="broken response"):
         transport.stream("POST", "http://127.0.0.1:8000/v1/x", {}, b"{}", 1)
     assert response.closed
 

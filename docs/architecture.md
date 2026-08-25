@@ -29,9 +29,18 @@ Framework-neutral code is the default. A framework integration must be in an
 isolated module. If it adds a runtime dependency, use an optional extra unless
 the dependency is necessary for all consumers.
 
-The public `opendle.oidc` module contains dependency-free authorization request
-primitives. Consumers keep provider HTTP calls, token exchange, identity-token
-validation, local sessions, grants, routes, and deployment configuration.
+The public `opendle.oidc` module contains a dependency-free confidential OIDC
+client. It owns bounded discovery, code exchange, JSON Web Key Set reads,
+RS256 ID-token verification, strict JSON, safe endpoints, PKCE, state, nonce,
+issuer, audience, and token-time checks. It supports `client_secret_basic` and
+`client_secret_post`. Consumers keep identity allowlists, authorization,
+sessions, cookies, CSRF, routes, error mapping, and deployment secrets.
+
+The public `opendle.contracts` module contains general JSON-equivalent types
+and RFC 8785 canonical JSON encoding. Ontology keeps compatibility aliases for
+these imports. Strict JSON, bounded standard-library HTTP, normalized headers,
+and cursor iteration are private shared client implementation modules. Public
+Router and Ontology transport and error types stay separate.
 
 The public `opendle.openrouter` module validates strict model identifiers and
 selects one exact row from a bounded public catalog JSON snapshot. It validates

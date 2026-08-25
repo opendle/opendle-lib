@@ -1,0 +1,1 @@
+{"id":"int-48bb20f29c1203749991296127e81753","kind":"field_change","created_at":"2026-08-25T10:28:32.880845222Z","actor":"tubededentifrice-dev","issue_id":"opendle-lib-2zm","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Implemented and verified the shared OIDC, HTTP, JSON, pagination, and canonical contract kernel."}}

@@ -40,6 +40,8 @@ from opendle.ontology import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from opendle._internal.http import UrllibHttpClient
+
 _CREDENTIAL = "test-only-credential"
 _ACCEPTED_MAXIMUM_FILE_BYTES = 10_485_760
 _MAXIMUM_FILE_NAME_WIRE_LENGTH = 1363
@@ -697,6 +699,38 @@ def test_transport_response_shape_is_validated(
         client(transport).get_service()
 
 
+def test_transport_preserves_client_errors_and_rejects_bounded_headers() -> None:
+    """Preserve typed client errors and map shared header failures."""
+
+    class TypedFailingTransport(QueueTransport):
+        def request(
+            self,
+            method: str,
+            url: str,
+            headers: Mapping[str, str],
+            body: bytes | None,
+            timeout: float,
+        ) -> OntologyTransportResponse:
+            del method, url, headers, body, timeout
+            msg = "direct protocol failure"
+            raise OntologyProtocolError(msg)
+
+    with pytest.raises(OntologyProtocolError, match="direct protocol"):
+        client(TypedFailingTransport()).get_service()
+    responses = (
+        OntologyTransportResponse(
+            200,
+            {f"X-{index}": "x" for index in range(101)},
+            b"{}",
+        ),
+        OntologyTransportResponse(200, {"X-Test": "bad\rvalue"}, b"{}"),
+    )
+    with pytest.raises(OntologyResponseLimitError):
+        client(QueueTransport([responses[0]])).get_service()
+    with pytest.raises(OntologyProtocolError, match="headers"):
+        client(QueueTransport([responses[1]])).get_service()
+
+
 def test_cursor_iteration_preserves_request_and_fails_at_caller_bound() -> None:
     """Change only the cursor and fail when more pages exceed the bound."""
     transport = QueueTransport(
@@ -760,8 +794,9 @@ def test_cursor_iteration_detects_a_cycle_to_the_initial_cursor() -> None:
         "cursor": "v1.initial",
     }
 
+    pages = subject.iter_query_pages("main", request, max_pages=2)
     with pytest.raises(OntologyProtocolError, match="cycle"):
-        list(subject.iter_query_pages("main", request, max_pages=2))
+        next(pages)
 
 
 def test_graph_iteration_replaces_only_the_next_page_cursor() -> None:
@@ -997,9 +1032,28 @@ class BoundedURLResponse:
         return self.body if amount is None else self.body[:amount]
 
 
-def test_default_standard_library_transport_handles_success_and_http_error(
-    monkeypatch: pytest.MonkeyPatch,
+class CallableOpener:
+    """Adapt one test callable to the standard-library opener interface."""
+
+    def __init__(self, callback: Callable[..., object]) -> None:
+        """Store the test callback."""
+        self._callback = callback
+
+    def open(self, *args: object, **kwargs: object) -> object:
+        """Call the configured response function."""
+        return self._callback(*args, **kwargs)
+
+
+def replace_default_opener(
+    subject: OntologyClient, callback: Callable[..., object]
 ) -> None:
+    """Replace the shared private opener in one default client transport."""
+    transport = object.__getattribute__(subject, "_transport")
+    http = cast("UrllibHttpClient", object.__getattribute__(transport, "_http"))
+    http.replace_opener(CallableOpener(callback))
+
+
+def test_default_standard_library_transport_handles_success_and_http_error() -> None:
     """Use the dependency-free default transport for complete HTTP responses."""
     subject = OntologyClient(
         base_url="http://localhost:8000",
@@ -1010,7 +1064,7 @@ def test_default_standard_library_transport_handles_success_and_http_error(
     def succeed(*_args: object, **_kwargs: object) -> DefaultURLResponse:
         return DefaultURLResponse()
 
-    monkeypatch.setattr(ontology_module, "_open_without_redirects", succeed)
+    replace_default_opener(subject, succeed)
     assert subject.get_service() == {"apiName": "xbot"}
 
     error_body = json.dumps(
@@ -1031,7 +1085,7 @@ def test_default_standard_library_transport_handles_success_and_http_error(
         http_errors.append(error)
         raise error
 
-    monkeypatch.setattr(ontology_module, "_open_without_redirects", fail)
+    replace_default_opener(subject, fail)
     with pytest.raises(OntologyValidationError):
         subject.get_service()
     assert http_errors[0].closed
@@ -1068,9 +1122,7 @@ def test_success_response_bound_rejects_custom_transport_overage() -> None:
     assert _CREDENTIAL not in str(captured.value)
 
 
-def test_default_transport_caps_exact_and_over_limit_success_reads(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_default_transport_caps_exact_and_over_limit_success_reads() -> None:
     """Read at most one byte beyond the finite successful-response bound."""
     exact = BoundedURLResponse(b"abc")
     over = BoundedURLResponse(b"abcd")
@@ -1079,13 +1131,13 @@ def test_default_transport_caps_exact_and_over_limit_success_reads(
     def succeed(*_args: object, **_kwargs: object) -> BoundedURLResponse:
         return next(responses)
 
-    monkeypatch.setattr(ontology_module, "_open_without_redirects", succeed)
     subject = OntologyClient(
         base_url="http://localhost:8000",
         service_api_name="xbot",
         service_key=_CREDENTIAL,
         maximum_success_response_bytes=3,
     )
+    replace_default_opener(subject, succeed)
 
     assert subject.download_file("main", "file-1") == b"abc"
     with pytest.raises(OntologyResponseLimitError):
@@ -1106,19 +1158,19 @@ def test_default_success_response_bound_accepts_the_managed_file_maximum() -> No
     assert subject.maximum_success_response_bytes >= _ACCEPTED_MAXIMUM_FILE_BYTES
 
 
-def test_default_transport_wraps_url_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_transport_wraps_url_errors() -> None:
     """Redact a URL transport failure and return one stable client error."""
 
     def fail(*_args: object, **_kwargs: object) -> object:
         reason = "offline"
         raise URLError(reason)
 
-    monkeypatch.setattr(ontology_module, "_open_without_redirects", fail)
     subject = OntologyClient(
         base_url="http://localhost:8000",
         service_api_name="xbot",
         service_key=_CREDENTIAL,
     )
+    replace_default_opener(subject, fail)
     with pytest.raises(OntologyTransportError, match="offline"):
         subject.get_service()
 

@@ -8,11 +8,18 @@ This repository is public and source-available under FSL-1.1-ALv2. Each
 version changes to Apache-2.0 on its license schedule. The current FSL version
 is not an open-source release.
 
-The package supplies dependency-free OpenID Connect authorization request
-primitives. It validates canonical 256-bit Base64URL tokens, creates RFC 7636
-S256 challenges, and builds bounded authorization-code URLs without letting an
-endpoint replace request-owned parameters. A caller can omit refresh-token
-access when it needs only an OpenID identity token.
+The package supplies a dependency-free OpenID Connect confidential client. It
+validates canonical 256-bit Base64URL controls, creates RFC 7636 S256
+challenges, and builds bounded authorization-code URLs. It also validates
+discovery data, sends code exchanges with `client_secret_basic` or
+`client_secret_post`, reads bounded JSON Web Key Sets, and verifies RS256 ID
+token signatures and claims. Its standard-library transport does not follow
+redirects. A host keeps its authorization, allowlists, sessions, cookies, and
+CSRF policy. See `docs/oidc.md`.
+
+General JSON contract values and RFC 8785 canonical JSON are available from
+`opendle.contracts` and the top-level `opendle` package. The old
+`opendle.ontology` imports remain compatibility aliases.
 
 The package also supplies the official dependency-free Python Router client,
 provider-neutral Router model contract values, and a stateless multi-turn
@@ -127,6 +134,7 @@ Use `uv` for dependency changes, commands, builds, and tools. Do not use
 - `src/opendle/`: public Python package
 - `tests/`: package and behavior tests
 - `docs/architecture.md`: package boundaries and evolution rules
+- `docs/oidc.md`: shared OpenID Connect client API
 - `docs/router-harness.md`: Router contract and harness public API
 - `docs/router-sdk.md`: official native Router Python client API
 - `docs/shared-library-roadmap.md`: planned reusable backend capabilities
