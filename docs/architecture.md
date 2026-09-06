@@ -29,6 +29,12 @@ Framework-neutral code is the default. A framework integration must be in an
 isolated module. If it adds a runtime dependency, use an optional extra unless
 the dependency is necessary for all consumers.
 
+The public `opendle.provider_sessions` module validates optional session header
+names and builds request header dictionaries from caller-owned session IDs.
+It rejects reserved transport, authentication, and provider control names.
+Consumers own configuration, ID creation, conversation lifetime, and transport.
+The module has no provider endpoint rules or mutable request state.
+
 The public `opendle.oidc` module contains a dependency-free confidential OIDC
 client. It owns bounded discovery, code exchange, JSON Web Key Set reads,
 RS256 ID-token verification, strict JSON, safe endpoints, PKCE, state, nonce,

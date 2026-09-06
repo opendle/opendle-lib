@@ -21,6 +21,14 @@ General JSON contract values and RFC 8785 canonical JSON are available from
 `opendle.contracts` and the top-level `opendle` package. The old
 `opendle.ontology` imports remain compatibility aliases.
 
+`opendle.provider_sessions` supplies `validate_session_header_name` and
+`build_session_headers` for configurable provider session headers. A blank
+header name disables the header. A configured name must be a non-reserved HTTP
+token of at most 255 characters. The session ID must contain 1 to 255 printable
+ASCII characters without whitespace. Invalid names and IDs raise `ValueError`.
+The caller owns provider settings, session ID creation, conversation lifetime,
+and request transport. Add the returned dictionary to each provider request.
+
 The package also supplies the official dependency-free Python Router client,
 provider-neutral Router model contract values, and a stateless multi-turn
 harness. One client binds one private backend service key to the complete
