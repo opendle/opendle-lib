@@ -72,6 +72,7 @@ for shell_script in scripts/*.sh; do
 done
 
 ./scripts/dependency-age-gate.sh check
+node --test javascript/*.test.mjs
 if OPENDLE_LIB_DEPENDENCY_MIN_AGE_DAYS=13 \
   ./scripts/dependency-age-gate.sh check >/dev/null 2>&1; then
   echo "The dependency age expected-failure check passed unexpectedly." >&2

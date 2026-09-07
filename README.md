@@ -110,6 +110,17 @@ applicable library change.
 
 ## Development
 
+The separate Node package `@opendle/dev-tools` supplies
+`developmentFreshness` from `@opendle/dev-tools/vite`. Router and Ontology use
+it through `git+https://github.com/opendle/opendle-lib.git#main`.
+It sets `Cache-Control: no-store` on development and preview responses, gives
+each development server a new dependency cache key, and reloads clients when
+configured shared build directories change. Pass absolute paths through
+`watchDirectories`. The host must deliver current shared files, for example
+with Docker bind mounts. This helper does not build or copy shared packages.
+Production builds keep Vite content-hashed assets. No Python dependency or API
+changes. Run `npm test` to check the Node helper.
+
 Install the exact locked environment:
 
 ```bash

@@ -1,0 +1,16 @@
+{
+  "name": "@opendle/dev-tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "FSL-1.1-ALv2",
+  "exports": {
+    "./vite": {
+      "types": "./javascript/vite.d.mts",
+      "import": "./javascript/vite.mjs"
+    }
+  },
+  "files": ["javascript/vite.mjs", "javascript/vite.d.mts", "LICENSE.md"],
+  "scripts": {"test": "node --test javascript/*.test.mjs"},
+  "engines": {"node": ">=24.17.0"}
+}

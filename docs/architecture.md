@@ -164,6 +164,11 @@ changed signature, return type, or public type before runtime.
 
 ## Quality
 
+The user requested shared development cache control for Router and Ontology
+on 2026-09-07. The separate, dependency-free `@opendle/dev-tools` Node package
+owns this Vite integration. It does not enter the Python wheel or change the
+Python runtime contract. See [decision 0002](decisions/0002-share-development-cache-control.md).
+
 The repository uses Ruff, Pyright, Mypy, pytest, coverage, pip-audit, Hatchling,
 and Twine. The lock file and exact development versions make local and CI
 checks reproducible. The dynamic `uv` dependency-age gate prevents selection
