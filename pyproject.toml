@@ -17,9 +17,19 @@ dependencies = []
 [project.urls]
 Repository = "https://github.com/opendle/opendle-lib"
 
+[project.optional-dependencies]
+public-http = [
+    "anyio==4.12.1",
+    "httpcore==1.0.9",
+    "httpx==0.28.1",
+]
+
 [dependency-groups]
 dev = [
+  "anyio==4.12.1",
   "hatchling==1.31.0",
+  "httpcore==1.0.9",
+  "httpx==0.28.1",
   "mypy==2.3.0",
   "pip-audit==2.10.1",
   "pyright==1.1.411",

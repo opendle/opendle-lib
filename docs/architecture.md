@@ -180,3 +180,11 @@ check and consumer type checks form the static compatibility gate.
 
 CI builds both the source archive and wheel. It validates package metadata and
 runs the complete repository check.
+
+`opendle.public_http` is an optional HTTPX adapter. It owns public IP checks,
+DNS address pinning, and verified transport identity. Product code retains
+content policy, redirect bounds, response byte bounds, authorization, and
+operation deadlines. The adapter uses the HTTPcore socket backend boundary so
+TCP addresses cannot change after validation while Host, TLS SNI, certificate
+checks, and pool origins continue to use the original hostname. Its isolated
+HTTPX pool adapter is tested against the exact optional dependency versions.

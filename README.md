@@ -162,3 +162,22 @@ Use `uv` for dependency changes, commands, builds, and tools. Do not use
 - `.claude/skills/`: reusable agent workflows
 
 Read `AGENTS.md` before a change.
+
+## Public HTTP destinations
+
+Install `opendle-lib[public-http]` to use
+`opendle.public_http.PinnedHTTPTransport` and `AsyncPinnedHTTPTransport` with
+HTTPX. Set `trust_env=False` on the client. The transports reject any DNS
+answer set that contains a non-public address and connect to a checked numeric
+address. They retain the original URL for Host, TLS SNI, certificate checks,
+and connection pooling. Each new connection, including redirect destinations,
+gets this check. Callers retain redirect limits, authorization, content rules,
+response byte limits, and operation deadlines.
+
+`PinnedNetworkBackend` supports a resolver, socket factory, and optional
+`ContinuationGuard` for an existing caller-owned operation deadline.
+`DeadlineNetworkStream` applies that deadline to socket and TLS operations.
+`SSRFError` rejects non-public destinations; network failures use HTTPX errors
+when sent through the transports. `is_private_ip` classifies numeric addresses.
+The optional adapter supports HTTPX 0.28.1 and HTTPcore 1.0.9; the dependency-free
+base package does not import it.
