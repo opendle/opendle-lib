@@ -29,7 +29,9 @@ class HiggsfieldError(Exception):
 
 
 class HiggsfieldProtocolError(HiggsfieldError):
-    """The provider returned an invalid lifecycle response."""
+    """Invalid lifecycle response, with accepted request identity when available."""
+
+    request_id: str | None = None
 
 
 class HiggsfieldGenerationError(HiggsfieldError):
@@ -75,19 +77,27 @@ def _url(value: str) -> httpx.URL:
     return url
 
 
-def _status_url(value: object, endpoint: httpx.URL) -> str:
-    if not isinstance(value, str):
-        message = "Missing Higgsfield status URL."
+def _request_id(value: object, previous: str | None) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        message = "Invalid Higgsfield request ID."
         raise HiggsfieldProtocolError(message)
-    url = _url(value)
-    if (url.scheme, url.host, url.port) != (
-        endpoint.scheme,
-        endpoint.host,
-        endpoint.port,
+    if previous is not None and value != previous:
+        message = "Higgsfield request ID changed during polling."
+        raise HiggsfieldProtocolError(message)
+    return value
+
+
+def _validate_status(status: object) -> None:
+    if status not in (
+        "queued",
+        "in_progress",
+        "completed",
+        "failed",
+        "nsfw",
+        "canceled",
     ):
-        message = "Higgsfield status URL has a different origin."
+        message = "Unknown Higgsfield request status."
         raise HiggsfieldProtocolError(message)
-    return str(url)
 
 
 def _payload(response: httpx.Response) -> dict[str, object]:
@@ -151,8 +161,9 @@ def generate_image(  # noqa: PLR0913
 ) -> HiggsfieldImageResult:
     """Submit once and poll until images, a terminal failure, or the deadline.
 
-    The combined key uses ``KEY_ID:KEY_SECRET``. Status URLs must have the
-    configured HTTPS origin. Requests disable redirects and client-level auth.
+    The combined key uses ``KEY_ID:KEY_SECRET``. Polling uses the configured
+    HTTPS endpoint and the accepted request ID, not a response-supplied host.
+    Requests disable redirects and client-level auth.
     HTTPX errors propagate without retry; callers must not resubmit after an
     uncertain transport error. Each network phase is limited to 30 seconds or
     the remaining deadline. The deadline is checked between requests.
@@ -165,41 +176,39 @@ def generate_image(  # noqa: PLR0913
     method = "POST"
     url = f"{base}/{model}"
     body: dict[str, object] | None = arguments
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise HiggsfieldTimeoutError(request_id, status_url)
-        payload = _payload(
-            client.request(
-                method,
-                url,
-                headers=headers,
-                json=body,
-                timeout=min(30.0, remaining),
-                follow_redirects=False,
-                auth=None,
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HiggsfieldTimeoutError(request_id, status_url)
+            payload = _payload(
+                client.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=body,
+                    timeout=min(30.0, remaining),
+                    follow_redirects=False,
+                    auth=None,
+                )
             )
-        )
-        current_id = payload.get("request_id")
-        if not isinstance(current_id, str) or not current_id:
-            message = "Missing Higgsfield request ID."
-            raise HiggsfieldProtocolError(message)
-        if request_id is not None and current_id != request_id:
-            message = "Higgsfield request ID changed during polling."
-            raise HiggsfieldProtocolError(message)
-        request_id = current_id
-        status = payload.get("status")
-        if status == "completed":
-            return _result(payload, request_id)
-        if status in ("failed", "nsfw", "canceled"):
-            raise HiggsfieldGenerationError(status, request_id)
-        if status not in ("queued", "in_progress"):
-            message = "Unknown Higgsfield request status."
-            raise HiggsfieldProtocolError(message)
-        if status_url is None:
-            status_url = _status_url(payload.get("status_url"), base)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise HiggsfieldTimeoutError(request_id, status_url)
-        time.sleep(min(poll_interval, remaining))
-        method, url, body = "GET", status_url, None
+            request_id = _request_id(payload.get("request_id"), request_id)
+            status = payload.get("status")
+            _validate_status(status)
+            if status == "completed":
+                return _result(payload, request_id)
+            if status in ("failed", "nsfw", "canceled"):
+                raise HiggsfieldGenerationError(status, request_id)
+            if status_url is None:
+                status_url = f"{base}/requests/{request_id}/status"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HiggsfieldTimeoutError(request_id, status_url)
+            time.sleep(min(poll_interval, remaining))
+            method, url, body = "GET", status_url, None
+    except (HiggsfieldProtocolError, httpx.HTTPError) as error:
+        if request_id is not None:
+            error.add_note(f"Higgsfield request ID: {request_id}")
+        if isinstance(error, HiggsfieldProtocolError):
+            error.request_id = request_id
+        raise

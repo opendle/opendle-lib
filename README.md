@@ -190,11 +190,15 @@ and model arguments. The function submits once and polls for image URLs. It
 returns `HiggsfieldImageResult` with `image_urls`, `request_id`, and `payload`.
 The default deadline is 300 seconds with a two-second polling interval.
 
-The client sends credentials only to the configured HTTPS origin and disables
-redirects. `HiggsfieldGenerationError` reports `failed`, `nsfw`, or `canceled`.
+The client builds the documented `/requests/{request_id}/status` URL on the
+configured HTTPS endpoint. It ignores response-supplied status URLs, so host
+aliases cannot redirect credentials. It disables redirects.
+`HiggsfieldGenerationError` reports `failed`, `nsfw`, or `canceled`.
 `HiggsfieldProtocolError` rejects invalid responses. `HiggsfieldTimeoutError`
-retains accepted request metadata for recovery. HTTPX errors propagate. Do not
-resubmit after an uncertain timeout. Each network phase has a timeout; the
+retains accepted request metadata for recovery. Protocol errors retain the
+accepted request ID. HTTPX errors propagate with a request ID traceback note
+after submission. Do not resubmit after an uncertain timeout.
+Each network phase has a timeout; the
 operation deadline is checked between requests. The host owns model settings,
 moderation policy, image downloads, storage, and transport configuration.
 

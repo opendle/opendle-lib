@@ -110,12 +110,12 @@ def test_terminal_failure_is_safe(status: str) -> None:
         {**_PENDING, "request_id": None},
         {**_PENDING, "request_id": ""},
         {**_PENDING, "status": "unknown"},
-        {**_PENDING, "status_url": None},
         {**_COMPLETE, "images": None},
         {**_COMPLETE, "images": []},
         {**_COMPLETE, "images": [None]},
         {**_COMPLETE, "images": [{"url": None}]},
         {**_COMPLETE, "images": [{"url": ""}]},
+        {**_COMPLETE, "images": [{"url": "https://cdn.example.com:invalid/image"}]},
     ],
 )
 def test_malformed_response(payload: object) -> None:
@@ -140,15 +140,14 @@ def test_malformed_response(payload: object) -> None:
         "https://api.higgsfield.ai:invalid/status",
     ],
 )
-def test_invalid_poll_destination_is_never_contacted(url: str) -> None:
+def test_provider_status_origin_does_not_receive_credentials(url: str) -> None:
     """Never send credentials to an unapproved origin or URL."""
     requests: list[httpx.Request] = []
-    with (
-        _client([{**_PENDING, "status_url": url}], requests) as client,
-        pytest.raises(HiggsfieldProtocolError),
-    ):
-        generate_image(client, api_key="test:key", model="soul", arguments={})
-    assert len(requests) == 1
+    with _client([{**_PENDING, "status_url": url}, _COMPLETE], requests) as client:
+        result = generate_image(client, api_key="test:key", model="soul", arguments={})
+    assert result.request_id == "job"
+    assert [str(request.url) for request in requests] == [f"{_API}/soul", _STATUS]
+    assert requests[1].headers["authorization"] == "Key test:key"
 
 
 def test_request_identity_cannot_change() -> None:
@@ -266,3 +265,56 @@ def test_invalid_endpoint_and_model(endpoint: str, model: str) -> None:
         generate_image(
             client, api_key="key", model=model, arguments={}, endpoint=endpoint
         )
+
+
+def test_polling_does_not_require_provider_status_url() -> None:
+    """The documented request endpoint works without the optional response URL."""
+    pending = {"request_id": "job", "status": "queued"}
+    requests: list[httpx.Request] = []
+    with _client([pending, _COMPLETE], requests) as client:
+        generate_image(client, api_key="test:key", model="soul", arguments={})
+    assert str(requests[1].url) == _STATUS
+
+
+@pytest.mark.parametrize(
+    "request_id", ["../other", ".", "..", "a/b", "a?b", "a#b", "a%2fb", "a\nb"]
+)
+def test_request_id_cannot_change_the_poll_route(request_id: str) -> None:
+    """Reject path, query, fragment, percent escapes, and control characters."""
+    requests: list[httpx.Request] = []
+    with (
+        _client([{**_PENDING, "request_id": request_id}], requests) as client,
+        pytest.raises(HiggsfieldProtocolError),
+    ):
+        generate_image(client, api_key="test:key", model="soul", arguments={})
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("payload", [[], {**_COMPLETE, "images": []}])
+def test_protocol_failure_retains_accepted_request(payload: object) -> None:
+    """A later protocol error must preserve the accepted request for recovery."""
+    with (
+        _client([_PENDING, payload], []) as client,
+        pytest.raises(HiggsfieldProtocolError) as caught,
+    ):
+        generate_image(client, api_key="test:key", model="soul", arguments={})
+    assert caught.value.request_id == "job"
+    assert "Higgsfield request ID: job" in caught.value.__notes__
+
+
+def test_poll_http_error_retains_request_note() -> None:
+    """Keep the HTTPX error type and attach safe recovery context to its traceback."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return (
+            httpx.Response(200, json=_PENDING)
+            if request.method == "POST"
+            else httpx.Response(500)
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as client,
+        pytest.raises(httpx.HTTPStatusError) as caught,
+    ):
+        generate_image(client, api_key="test:key", model="soul", arguments={})
+    assert "Higgsfield request ID: job" in caught.value.__notes__
