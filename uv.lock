@@ -3,7 +3,7 @@ revision = 3
 requires-python = "==3.14.*"
 
 [options]
-exclude-newer = "2026-08-29T00:00:00Z"
+exclude-newer = "2026-09-05T00:00:00Z"
 
 [[package]]
 name = "anyio"
@@ -638,6 +638,9 @@ version = "0.0.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
+higgsfield = [
+    { name = "httpx" },
+]
 public-http = [
     { name = "anyio" },
     { name = "httpcore" },
@@ -663,9 +666,10 @@ dev = [
 requires-dist = [
     { name = "anyio", marker = "extra == 'public-http'", specifier = "==4.12.1" },
     { name = "httpcore", marker = "extra == 'public-http'", specifier = "==1.0.9" },
+    { name = "httpx", marker = "extra == 'higgsfield'", specifier = "==0.28.1" },
     { name = "httpx", marker = "extra == 'public-http'", specifier = "==0.28.1" },
 ]
-provides-extras = ["public-http"]
+provides-extras = ["public-http", "higgsfield"]
 
 [package.metadata.requires-dev]
 dev = [

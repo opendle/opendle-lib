@@ -181,3 +181,22 @@ response byte limits, and operation deadlines.
 when sent through the transports. `is_private_ip` classifies numeric addresses.
 The optional adapter supports HTTPX 0.28.1 and HTTPcore 1.0.9; the dependency-free
 base package does not import it.
+
+## Higgsfield image requests
+
+Install `opendle-lib[higgsfield]` to use `opendle.higgsfield.generate_image`.
+Pass a caller-owned `httpx.Client`, the combined `KEY_ID:KEY_SECRET`, model ID,
+and model arguments. The function submits once and polls for image URLs. It
+returns `HiggsfieldImageResult` with `image_urls`, `request_id`, and `payload`.
+The default deadline is 300 seconds with a two-second polling interval.
+
+The client sends credentials only to the configured HTTPS origin and disables
+redirects. `HiggsfieldGenerationError` reports `failed`, `nsfw`, or `canceled`.
+`HiggsfieldProtocolError` rejects invalid responses. `HiggsfieldTimeoutError`
+retains accepted request metadata for recovery. HTTPX errors propagate. Do not
+resubmit after an uncertain timeout. Each network phase has a timeout; the
+operation deadline is checked between requests. The host owns model settings,
+moderation policy, image downloads, storage, and transport configuration.
+
+See the [official request lifecycle](https://docs.higgsfield.ai/docs/concepts/requests)
+and [retry guidance](https://docs.higgsfield.ai/docs/concepts/errors).
