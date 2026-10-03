@@ -204,3 +204,10 @@ moderation policy, image downloads, storage, and transport configuration.
 
 See the [official request lifecycle](https://docs.higgsfield.ai/docs/concepts/requests)
 and [retry guidance](https://docs.higgsfield.ai/docs/concepts/errors).
+
+
+`opendle.reasoning` builds structured text-endpoint reasoning parameters and
+applies a system-token policy without changing caller-owned requests. Hosts
+supply the selected transport strategy, common level, and exact mapped value.
+Hosts keep model configuration, inheritance, adapter defaults, and message
+composition. The module has no framework or transport dependency.

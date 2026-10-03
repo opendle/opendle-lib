@@ -193,3 +193,10 @@ operation deadlines. The adapter uses the HTTPcore socket backend boundary so
 TCP addresses cannot change after validation while Host, TLS SNI, certificate
 checks, and pool origins continue to use the original hostname. Its isolated
 HTTPX pool adapter is tested against the exact optional dependency versions.
+
+
+The public `opendle.reasoning` module builds effort, nested effort, thinking
+switch, and native switch parameters. It applies a system token or a
+direct-answer instruction once to one system message. Hosts own model state,
+strategy resolution, common-level mappings, request assembly, and transport.
+It shares the protocol behavior needed by Router and the FJ2 thinking controls.
