@@ -42,6 +42,24 @@ checks to an injected transport. Client-created errors do not contain the
 client secret, provider response content, token content, or transport error
 text.
 
+## HTTPX transport
+
+Install `opendle-lib[oidc-httpx]` to use
+`opendle.oidc_httpx.HttpxOidcTransport`. It is the common HTTPX transport for
+Ontology and Router. The dependency-free client remains available.
+
+The transport checks header count, header bytes, duplicate critical headers,
+and Content-Length before it reads the body. It requests identity encoding
+and rejects compressed responses before it reads the body. It checks each
+body chunk before it adds the chunk to the response. It does not follow redirects. HTTPX
+errors become fixed `OidcTransportError` messages without provider content.
+
+Supply `transport` for an injected HTTPX transport. By default, each request
+creates and closes an HTTPX client with environment proxies disabled. A host
+can instead supply `client` and own its lifetime. That client must have
+`trust_env=False`. An optional `httpx.Timeout` keeps host phase timeouts.
+Set `maximum_response_bytes` to the host document bound.
+
 ## Host-owned policy
 
 The host must keep these controls outside the shared client:

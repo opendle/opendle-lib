@@ -42,6 +42,11 @@ issuer, audience, and token-time checks. It supports `client_secret_basic` and
 `client_secret_post`. Consumers keep identity allowlists, authorization,
 sessions, cookies, CSRF, routes, error mapping, and deployment secrets.
 
+The optional `opendle.oidc_httpx` module supplies one bounded HTTPX transport
+for these clients. It owns pre-read header checks, identity encoding, response
+byte limits, redirect rejection, and safe HTTP errors. Hosts keep client
+lifetime and phase timeout policy. The base package does not import HTTPX.
+
 The public `opendle.contracts` module contains general JSON-equivalent types
 and RFC 8785 canonical JSON encoding. Ontology keeps compatibility aliases for
 these imports. Strict JSON, bounded standard-library HTTP, normalized headers,
