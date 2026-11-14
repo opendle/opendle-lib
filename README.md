@@ -206,6 +206,9 @@ prefix. `router()` returns the routes for `/session`, `/register`, `/login`,
 are request dependencies for host routes. A session request that is not safe
 must have the configured `Origin`. There is no rate limit.
 
+`opendle.passkey_testing.SoftPasskey` answers WebAuthn options in tests, so a
+consumer can test its store and routes without a browser.
+
 ## Blob storage
 
 `opendle.blob_store.BlobStore` stores a file under its SHA-256 in an S3

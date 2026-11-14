@@ -61,6 +61,7 @@ The optional `opendle.passkey_fastapi` module joins the two modules to
 FastAPI. It owns the routes, the `__Host-` cookies, the same-origin check for
 session writes, and the dependencies that accept a session or a bearer token.
 The host owns the path prefix, the unit of work, and all other routes.
+`opendle.passkey_testing` supplies a software passkey for consumer tests.
 
 The public `opendle.blob_store` module stores files by SHA-256 through a
 caller-supplied S3 client and keeps a local cache with a byte limit. It

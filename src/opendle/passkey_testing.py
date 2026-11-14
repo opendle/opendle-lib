@@ -35,7 +35,7 @@ class SoftPasskey:
         self._rp_id_hash = hashlib.sha256(rp_id.encode("ascii")).digest()
         self._sign_count = 0
         self._user_handle = ""
-        self.credential_id = _b64url(os.urandom(16))
+        self.credential_id: str = _b64url(os.urandom(16))
 
     def use_identity_of(self, credential_id: str, user_id: str) -> None:
         """Claim the credential ID and the user of a different passkey."""
