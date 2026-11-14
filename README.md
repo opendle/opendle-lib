@@ -157,7 +157,8 @@ Use `uv` for dependency changes, commands, builds, and tools. Do not use
 - `docs/router-harness.md`: Router contract and harness public API
 - `docs/router-sdk.md`: official native Router Python client API
 - `docs/shared-library-roadmap.md`: planned reusable backend capabilities
-- `docs/decisions/`: accepted architecture decisions
+- `docs/decisions/`: accepted architecture decisions, including the shared
+  passkey, session, and blob storage decision
 - `scripts/`: deterministic repository checks
 - `.claude/skills/`: reusable agent workflows
 
@@ -181,6 +182,38 @@ response byte limits, and operation deadlines.
 when sent through the transports. `is_private_ip` classifies numeric addresses.
 The optional adapter supports HTTPX 0.28.1 and HTTPcore 1.0.9; the dependency-free
 base package does not import it.
+
+## Passkey sign-in, sessions, and API tokens
+
+`opendle.local_auth` has no dependency. `LocalSessions` creates browser
+sessions and bearer API tokens and checks them. The caller implements
+`SessionStore`; the store gets only SHA-256 hashes.
+
+Install `opendle-lib[passkey]` to use `opendle.passkey.PasskeyService`. It
+runs registration, addition, and sign-in ceremonies with discoverable
+credentials, required user verification, and no attestation. Registration
+needs a one-time setup grant from `create_setup_grant`; a grant for a current
+user ID adds a recovery passkey. The caller implements `PasskeyStore`. A
+refused operation raises `AuthError` with a stable `reason`. The service
+raises it before it writes a user, passkey, or session record, so the caller
+can commit and keep the used challenge used.
+
+Install `opendle-lib[passkey-fastapi]` to use
+`opendle.passkey_fastapi.PasskeyAuth`. Give it a `PasskeyConfig`, a store
+factory that returns a context manager for one unit of work, and a cookie
+prefix. `router()` returns the routes for `/session`, `/register`, `/login`,
+`/logout`, `/passkeys`, and `/tokens`. `principal` and `session_principal`
+are request dependencies for host routes. A session request that is not safe
+must have the configured `Origin`. There is no rate limit.
+
+## Blob storage
+
+`opendle.blob_store.BlobStore` stores a file under its SHA-256 in an S3
+bucket and keeps a local cache with a byte limit. Pass an S3 client such as
+`boto3.client("s3", ...)`; the library does not import a vendor package.
+`put_file` uploads only new content. `local_path` downloads a missing blob.
+The cache deletes the oldest files first and keeps the blob of the current
+call. `drop_local` deletes a local copy when the host does not need it.
 
 ## Higgsfield image requests
 

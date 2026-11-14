@@ -69,11 +69,11 @@ extraction.
 | Idempotency and request fingerprints | E | E | E | E | P | Strong | Key validation, canonical hashing, and storage protocols. |
 | Secret handling and cryptographic primitives | E | E | E | E | P | Strong | Small primitives and ports. Keep key custody local. |
 | Configuration and endpoint safety | E | E | E | E | P | Possible | Secret-safe settings and transport checks. |
-| Human authentication | E | E | E/P | E/P | P | Possible | Protocol helpers only. Keep account and permission data local. |
+| Human authentication | E | E | E/P | E/P | P | Strong | Protocol helpers and storage protocols. Keep account and permission data local. |
 | Service credentials and short-lived tokens | E | E | E | E | P | Strong | Token claims, exchange rules, and safe client lifecycle. |
 | Scope and authorization helpers | E | E | E | E | P | Possible | Scope value types and policy hooks. Do not add shared domain roles. |
 | Rate limiting and abuse controls | E | E | P | P | P | Possible | Algorithms and decision values, not product thresholds. |
-| Object storage and attachment safety | E | E | E | E | P | Possible | Metadata, validation, and storage ports. Keep vendor adapters local. |
+| Object storage and attachment safety | E | E | E | E | P | Possible | Content-addressed blobs with a local cache are implemented. Keep vendor adapters local. |
 | Audit events and redaction | E | E | E | E | P | Strong | Event shape, actor references, redaction, and sink ports. |
 | Privacy, retention, export, deletion | E | E | E | E | P | Possible | Lifecycle types and operation protocols. Keep deadlines and policy local. |
 | Retry, leases, worker state, circuits | E | E | E | P | P | Strong | Framework-neutral reliability primitives. |
@@ -289,17 +289,24 @@ Implemented library work:
 - `client_secret_basic` and `client_secret_post` selection;
 - immutable verified issuer and subject values with read-only claims;
 - strict bounded no-redirect HTTP, headers, and JSON;
+- local browser sessions and bearer API tokens in `opendle.local_auth`;
+- passkey registration, addition, and sign-in with one-time challenges and a
+  one-time setup grant in `opendle.passkey`;
+- FastAPI routes, cookies, and the same-origin check in
+  `opendle.passkey_fastapi`.
+
+The user decided on 2026-11-14 that Poster starts the passkey and session
+code here, before a second consumer. See
+`docs/decisions/0003-share-passkey-sessions-and-blob-storage.md`.
 
 Possible later work:
 
 - recent-authentication checks;
-- local-session and revocation protocols;
-- WebAuthn challenge replay and origin-validation primitives, only if a second
-  implementation confirms the same rules.
+- rate limit algorithms for a consumer that is open to the public.
 
 Keep these parts local:
 
-- user and passkey records;
+- the database schema and migrations for user and passkey records;
 - account enrollment and recovery screens;
 - administrator grants;
 - membership, role, and workspace permission records;
@@ -427,6 +434,11 @@ The library must not provide one default limit for all projects.
 
 This is a possible candidate. The common part is the file lifecycle, not the
 storage vendor or the product file model.
+
+`opendle.blob_store` is implemented for Poster by the user decision of
+2026-11-14. It stores a file by its SHA-256 through a caller-supplied S3
+client and keeps a local cache with a byte limit. The items below stay
+candidates.
 
 Implement and test ports and value types for:
 
@@ -882,7 +894,8 @@ that the records or permission rules should be shared.
    upload, integrity, and cleanup states.
 7. Maintain the implemented OIDC migrations in LLM Router and Ontology.
 8. Add optional FastAPI and Django adapters only when two consumers need the
-   same adapter behavior.
+   same adapter behavior. The passkey FastAPI adapter is the accepted
+   exception.
 9. Maintain and extend the implemented Router client transport only after two
    consumers need the same new behavior.
 10. Revisit webhook, notification, privacy, and financial value helpers after

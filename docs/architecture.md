@@ -47,6 +47,26 @@ for these clients. It owns pre-read header checks, identity encoding, response
 byte limits, redirect rejection, and safe HTTP errors. Hosts keep client
 lifetime and phase timeout policy. The base package does not import HTTPX.
 
+The public `opendle.local_auth` module creates and checks browser sessions
+and bearer API tokens. It has no dependency. It gives a secret one time and
+stores only the SHA-256 hash through the caller-owned `SessionStore`.
+
+The optional `opendle.passkey` module runs WebAuthn registration, addition,
+and sign-in with the `webauthn` package. It owns challenge creation, one-time
+challenge use, the cookie binding check, origin and relying party checks, the
+setup grant, and the last-passkey rule. The caller implements `PasskeyStore`
+and keeps its schema and migrations. The module has no rate limit.
+
+The optional `opendle.passkey_fastapi` module joins the two modules to
+FastAPI. It owns the routes, the `__Host-` cookies, the same-origin check for
+session writes, and the dependencies that accept a session or a bearer token.
+The host owns the path prefix, the unit of work, and all other routes.
+
+The public `opendle.blob_store` module stores files by SHA-256 through a
+caller-supplied S3 client and keeps a local cache with a byte limit. It
+deletes the oldest cache files first. It has no dependency. The host owns the
+bucket, the credentials, and the rule for when a local copy is not necessary.
+
 The public `opendle.contracts` module contains general JSON-equivalent types
 and RFC 8785 canonical JSON encoding. Ontology keeps compatibility aliases for
 these imports. Strict JSON, bounded standard-library HTTP, normalized headers,
