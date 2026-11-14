@@ -141,6 +141,14 @@ class MemoryStore:
             last_used_at=used_at,
         )
 
+    def rename_passkey(self, user_id: str, passkey_id: str, label: str) -> bool:
+        """Store a new label."""
+        passkey = self.passkey_rows.get(passkey_id)
+        if passkey is None or passkey.user_id != user_id:
+            return False
+        self.passkey_rows[passkey_id] = replace(passkey, label=label)
+        return True
+
     def remove_passkey(self, user_id: str, passkey_id: str) -> bool:
         """Delete one passkey."""
         passkey = self.passkey_rows.get(passkey_id)

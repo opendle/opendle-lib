@@ -109,6 +109,12 @@ class PasskeyRequest(BaseModel):
     label: str = Field(default="", max_length=100)
 
 
+class PasskeyLabelRequest(BaseModel):
+    """Give a passkey a new label."""
+
+    label: str = Field(min_length=1, max_length=64)
+
+
 class PasskeyView(BaseModel):
     """Describe one passkey of the user."""
 
@@ -344,6 +350,23 @@ class PasskeyAuth:
                 ),
             )
             self._set_cookie(response, self._challenge_cookie, "", 0)
+            return _passkey_view(passkey)
+
+        @router.patch("/passkeys/{passkey_id}")
+        def rename_passkey(
+            passkey_id: str,
+            body: PasskeyLabelRequest,
+            principal: Annotated[Principal, Depends(self.session_principal)],
+        ) -> PasskeyView:
+            passkey = self._run(
+                lambda services: services.passkeys.rename_passkey(
+                    principal.user_id,
+                    passkey_id,
+                    body.label,
+                ),
+            )
+            if passkey is None:
+                raise HTTPException(status_code=404, detail="Passkey not found.")
             return _passkey_view(passkey)
 
         @router.delete("/passkeys/{passkey_id}", status_code=204)

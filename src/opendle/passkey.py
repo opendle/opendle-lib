@@ -192,6 +192,10 @@ class PasskeyStore(Protocol):
         """Store the signature counter and the time of a sign-in."""
         ...
 
+    def rename_passkey(self, user_id: str, passkey_id: str, label: str) -> bool:
+        """Store a new label for one passkey of a user. Return whether it existed."""
+        ...
+
     def remove_passkey(self, user_id: str, passkey_id: str) -> bool:
         """Delete one passkey of a user. Return whether it existed."""
         ...
@@ -410,6 +414,30 @@ class PasskeyService:
     def passkeys(self, user_id: str) -> Sequence[Passkey]:
         """Return the passkeys of one user, oldest first."""
         return self._store.passkeys(user_id)
+
+    def rename_passkey(
+        self,
+        user_id: str,
+        passkey_id: str,
+        label: str,
+    ) -> Passkey | None:
+        """Give one passkey of a user a new label. Return the passkey.
+
+        Returns:
+            The passkey with its new label, or `None` when the user does not
+            have this passkey.
+
+        Raises:
+            AuthError: If the label is empty.
+
+        """
+        text = label.strip()[:_MAXIMUM_LABEL_LENGTH]
+        if not text:
+            msg = "Give the passkey a name."
+            raise AuthError(msg, reason="input")
+        if not self._store.rename_passkey(user_id, passkey_id, text):
+            return None
+        return self._store.passkey(passkey_id)
 
     def remove_passkey(self, user_id: str, passkey_id: str) -> bool:
         """Delete one passkey of a user. Return whether it existed.

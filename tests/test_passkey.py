@@ -362,6 +362,14 @@ def test_a_signed_in_user_adds_and_removes_passkeys() -> None:
 
     assert second.label == "Phone"
     assert scene.login(second_device).id == second.id
+    assert scene.service.rename_passkey(first.user_id, "unknown", "Key") is None
+    assert scene.service.rename_passkey("other-user", first.id, "Key") is None
+    renamed = scene.service.rename_passkey(first.user_id, second.id, "  Tablet ")
+    assert renamed is not None
+    assert renamed.label == "Tablet"
+    with pytest.raises(AuthError) as empty:
+        scene.service.rename_passkey(first.user_id, second.id, "  ")
+    assert _reason(empty) == "input"
     assert not scene.service.remove_passkey(first.user_id, "unknown")
     assert not scene.service.remove_passkey("other-user", first.id)
     assert scene.service.remove_passkey(first.user_id, first.id)

@@ -216,6 +216,14 @@ def test_a_session_manages_passkeys() -> None:
     assert added.status_code == HTTPStatus.OK
     assert added.json()["label"] == "Phone"
     assert added.json()["last_used_at"] is None
+    renamed = site.client.patch(
+        f"/auth/passkeys/{first_id}",
+        json={"label": "Work laptop"},
+    )
+    assert renamed.status_code == HTTPStatus.OK
+    assert renamed.json()["label"] == "Work laptop"
+    unknown = site.client.patch("/auth/passkeys/unknown", json={"label": "Key"})
+    assert unknown.status_code == HTTPStatus.NOT_FOUND
     missing = site.client.delete("/auth/passkeys/unknown")
     assert missing.status_code == HTTPStatus.NOT_FOUND
     removed = site.client.delete(f"/auth/passkeys/{first_id}")
