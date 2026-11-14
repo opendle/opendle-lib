@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 from opendle.local_auth import Principal, new_secret
 from opendle.passkey import PasskeyConfig, PasskeyService
 from opendle.passkey_fastapi import AuthStore, PasskeyAuth
-from passkey_support import CONFIG, ORIGIN, FakeClock, MemoryStore, SoftPasskey
+from passkey_support import (
+    CONFIG,
+    ORIGIN,
+    FakeClock,
+    MemoryStore,
+    new_passkey,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -32,7 +38,7 @@ class Site:
         self.store = MemoryStore()
         self.clock = FakeClock()
         self.commits = 0
-        self.device = SoftPasskey()
+        self.device = new_passkey()
         self.auth = PasskeyAuth(
             config=config,
             store_factory=self._unit_of_work,
@@ -189,7 +195,7 @@ def test_a_session_manages_passkeys() -> None:
     site = Site()
     site.register()
     first_id = site.device.credential_id
-    second = SoftPasskey()
+    second = new_passkey()
 
     listed = site.client.get("/auth/passkeys").json()
     assert [(item["id"], item["label"]) for item in listed] == [(first_id, "Laptop")]

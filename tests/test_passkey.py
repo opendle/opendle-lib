@@ -8,7 +8,14 @@ import pytest
 
 from opendle.local_auth import AuthError, new_secret
 from opendle.passkey import Passkey, PasskeyConfig, PasskeyService
-from passkey_support import CONFIG, ORIGIN, FakeClock, MemoryStore, SoftPasskey
+from passkey_support import (
+    CONFIG,
+    ORIGIN,
+    FakeClock,
+    MemoryStore,
+    SoftPasskey,
+    new_passkey,
+)
 
 
 class Scene:
@@ -19,7 +26,7 @@ class Scene:
         self.store = MemoryStore()
         self.clock = FakeClock()
         self.service = PasskeyService(self.store, CONFIG, clock=self.clock)
-        self.device = SoftPasskey()
+        self.device = new_passkey()
 
     def register(
         self,
@@ -220,7 +227,7 @@ def test_a_recovery_grant_adds_a_passkey_to_the_current_user() -> None:
     """A grant with a user ID registers a passkey and keeps the user."""
     scene = Scene()
     first = scene.register()
-    second_device = SoftPasskey()
+    second_device = new_passkey()
 
     second = scene.register(second_device, user_id=first.user_id)
 
@@ -291,7 +298,9 @@ def test_a_bad_registration_answer_is_refused() -> None:
         scene.service.finish_registration(
             challenge_id=started.challenge_id,
             binding=started.binding,
-            credential=SoftPasskey(origin="https://evil.example").create(
+            credential=SoftPasskey(
+                origin="https://evil.example", rp_id=CONFIG.rp_id
+            ).create(
                 started.options,
             ),
             setup_token=token,
@@ -306,7 +315,7 @@ def test_a_bad_sign_in_answer_is_refused() -> None:
     """An unknown credential, a wrong user handle, or a bad signature fails."""
     scene = Scene()
     scene.register()
-    stranger = SoftPasskey()
+    stranger = new_passkey()
 
     def attempt(change: dict[str, object] | None, device: SoftPasskey) -> str:
         started = scene.service.begin_login()
@@ -337,7 +346,7 @@ def test_a_signed_in_user_adds_and_removes_passkeys() -> None:
     """A user keeps one passkey or more and removes only owned passkeys."""
     scene = Scene()
     first = scene.register()
-    second_device = SoftPasskey()
+    second_device = new_passkey()
     started = scene.service.begin_addition(first.user_id)
     excluded = cast("list[dict[str, object]]", started.options["excludeCredentials"])
 
@@ -377,7 +386,7 @@ def test_an_addition_needs_a_known_user_and_its_own_challenge() -> None:
             user_id="other-user",
             challenge_id=started.challenge_id,
             binding=started.binding,
-            credential=SoftPasskey().create(started.options),
+            credential=new_passkey().create(started.options),
         )
     assert _reason(raised) == "challenge"
     assert CONFIG.origin == ORIGIN
