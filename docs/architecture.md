@@ -221,3 +221,8 @@ switch, and native switch parameters. It applies a system token or a
 direct-answer instruction once to one system message. Hosts own model state,
 strategy resolution, common-level mappings, request assembly, and transport.
 It shares the protocol behavior needed by Router and the FJ2 thinking controls.
+
+The optional `opendle.web_push` module validates browser push destinations
+and encryption keys, derives VAPID keys with a separate HKDF context, and uses
+`pywebpush` for payload encryption and delivery. The host owns storage,
+permissions, notification rules and delivery timing.

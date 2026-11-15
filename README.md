@@ -247,3 +247,10 @@ applies a system-token policy without changing caller-owned requests. Hosts
 supply the selected transport strategy, common level, and exact mapped value.
 Hosts keep model configuration, inheritance, adapter defaults, and message
 composition. The module has no framework or transport dependency.
+
+`opendle.web_push` supplies validated browser subscriptions, stable VAPID
+keys derived from a caller-owned secret and context, and encrypted Web Push
+delivery. Install the `web-push` extra. It accepts the Chrome, Firefox, Apple
+and Windows browser push services. The caller owns permission, subscription
+storage, notification text, authorization and delivery timing. HTTP 404 or 410
+means that the subscription must be removed.

@@ -18,6 +18,9 @@ dependencies = []
 Repository = "https://github.com/opendle/opendle-lib"
 
 [project.optional-dependencies]
+web-push = [
+    "pywebpush==2.3.0",
+]
 oidc-httpx = [
     "httpx==0.28.1",
 ]
