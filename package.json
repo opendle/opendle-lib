@@ -12,5 +12,5 @@
   },
   "files": ["javascript/vite.mjs", "javascript/vite.d.mts", "LICENSE.md"],
   "scripts": {"test": "node --test javascript/*.test.mjs"},
-  "engines": {"node": ">=24.17.0"}
+  "engines": {"node": ">=26.13.0"}
 }
