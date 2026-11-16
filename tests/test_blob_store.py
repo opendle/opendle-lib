@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -34,6 +35,11 @@ class FakeBucket:
         self.downloads += 1
         Path(Filename).write_bytes(b"partial")
         Path(Filename).write_bytes(self.objects[Bucket, Key])
+
+    def delete_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]:  # noqa: N803
+        """Remove an object if it exists."""
+        self.objects.pop((Bucket, Key), None)
+        return {}
 
     def list_objects_v2(
         self,
@@ -164,3 +170,68 @@ def test_bad_input_is_refused(tmp_path: Path) -> None:
         _store(tmp_path, FakeBucket(), limit=-1)
     with pytest.raises(ValueError, match="SHA-256"):
         _store(tmp_path, FakeBucket()).local_path("../secret")
+
+
+def test_delete_removes_the_object_and_cache_and_can_be_repeated(
+    tmp_path: Path,
+) -> None:
+    """Other blobs stay available, and a removed blob can be uploaded again."""
+    bucket = FakeBucket()
+    store = _store(tmp_path, bucket)
+    first = store.put_file(_source(tmp_path, b"first"))
+    second = store.put_file(_source(tmp_path, b"second"))
+
+    store.delete(first.sha256)
+    store.delete(first.sha256)
+
+    assert ("media", f"sha256/{first.sha256}") not in bucket.objects
+    assert not store.is_cached(first.sha256)
+    assert store.local_path(second.sha256).read_bytes() == b"second"
+    store.put_file(_source(tmp_path, b"first"))
+    assert bucket.objects["media", f"sha256/{first.sha256}"] == b"first"
+
+
+def test_delete_rejects_bad_ids_and_keeps_the_cache_on_bucket_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed bucket delete must not remove the only usable local copy."""
+    bucket = FakeBucket()
+    store = _store(tmp_path, bucket)
+    blob = store.put_file(_source(tmp_path, b"first"))
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        store.delete("../other")
+    assert len(bucket.objects) == 1
+
+    def fail_delete(*, Bucket: str, Key: str) -> Mapping[str, object]:  # noqa: N803
+        assert Bucket == "media"
+        assert Key.startswith("sha256/")
+        message = "The bucket did not answer."
+        raise OSError(message)
+
+    monkeypatch.setattr(bucket, "delete_object", fail_delete)
+    with pytest.raises(OSError, match="did not answer"):
+        store.delete(blob.sha256)
+    assert store.local_path(blob.sha256).read_bytes() == b"first"
+    assert len(bucket.objects) == 1
+
+
+def test_delete_requires_an_optional_delete_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An existing client can still use the store without deletion support."""
+    bucket = FakeBucket()
+    store = _store(tmp_path, bucket)
+    blob = store.put_file(_source(tmp_path, b"first"))
+    legacy = SimpleNamespace(
+        upload_file=bucket.upload_file,
+        download_file=bucket.download_file,
+        list_objects_v2=bucket.list_objects_v2,
+    )
+    monkeypatch.setattr(store, "_client", legacy)
+
+    with pytest.raises(TypeError, match="does not support deletion"):
+        store.delete(blob.sha256)
+    assert store.local_path(blob.sha256).read_bytes() == b"first"

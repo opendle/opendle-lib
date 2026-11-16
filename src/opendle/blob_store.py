@@ -12,7 +12,7 @@ import re
 import shutil
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -44,6 +44,15 @@ class ObjectClient(Protocol):
         MaxKeys: int,  # noqa: N803
     ) -> Mapping[str, object]:
         """List objects by prefix. The result has the `KeyCount` field."""
+        ...
+
+
+@runtime_checkable
+class _DeleteClient(Protocol):
+    """Name the optional S3 delete operation."""
+
+    def delete_object(self, *, Bucket: str, Key: str) -> Mapping[str, object]:  # noqa: N803
+        """Delete one object. A missing object has the same result."""
         ...
 
 
@@ -149,6 +158,26 @@ class BlobStore:
     def drop_local(self, sha256: str) -> None:
         """Delete the cache copy of a blob. The bucket object stays."""
         self._cache_path(sha256).unlink(missing_ok=True)
+
+    def delete(self, sha256: str) -> None:
+        """Delete a bucket object and its local cache copy.
+
+        The S3 client must provide `delete_object(Bucket=..., Key=...)`.
+        The operation is safe to repeat when the object is absent. The caller
+        must ensure that no reader or writer needs the blob. A bucket error
+        propagates and keeps the local copy.
+
+        Raises:
+            ValueError: If the blob ID is not a lowercase SHA-256 value.
+            TypeError: If the client does not provide object deletion.
+
+        """
+        path = self._cache_path(sha256)
+        if not isinstance(self._client, _DeleteClient):
+            msg = "The object client does not support deletion."
+            raise TypeError(msg)
+        self._client.delete_object(Bucket=self._bucket, Key=self._key(sha256))
+        path.unlink(missing_ok=True)
 
     def copy_to(self, sha256: str, target: Path) -> None:
         """Copy a blob to a local file outside the cache."""

@@ -217,6 +217,9 @@ bucket and keeps a local cache with a byte limit. Pass an S3 client such as
 `put_file` uploads only new content. `local_path` downloads a missing blob.
 The cache deletes the oldest files first and keeps the blob of the current
 call. `drop_local` deletes a local copy when the host does not need it.
+`delete` removes the bucket object and its local copy. This requires a client
+with `delete_object(Bucket=..., Key=...)`. The host must check all references
+before deletion. A bucket error keeps the local copy. A repeated delete is safe.
 
 ## Higgsfield image requests
 
