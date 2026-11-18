@@ -134,6 +134,10 @@ Add or remove a dependency through the age gate:
 ./scripts/dependency-age-gate.sh remove PACKAGE
 ```
 
+`pyproject.toml` sets `[tool.uv] exclude-newer = "14 days"`. uv does not
+select a release that is less than 14 days old. Dependabot opens weekly
+grouped update pull requests with a 14-day cooldown.
+
 Run all repository checks:
 
 ```bash

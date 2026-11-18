@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.31.0"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -19,13 +19,13 @@ Repository = "https://github.com/opendle/opendle-lib"
 
 [project.optional-dependencies]
 web-push = [
-    "pywebpush==2.3.0",
+    "pywebpush==2.5.0",
 ]
 oidc-httpx = [
     "httpx==0.28.1",
 ]
 public-http = [
-    "anyio==4.14.2",
+    "anyio==4.16.0",
     "httpcore==1.0.9",
     "httpx==0.28.1",
 ]
@@ -42,26 +42,27 @@ passkey-fastapi = [
 
 [dependency-groups]
 dev = [
-  "anyio==4.14.2",
-  "cbor2==6.1.5",
-  "cryptography==50.0.0",
+  "anyio==4.16.0",
+  "cbor2==6.2.0.post2",
+  "cryptography==50.0.2",
   "fastapi==0.162.0",
-  "hatchling==1.31.0",
+  "hatchling==1.33.0",
   "httpcore==1.0.9",
   "httpx==0.28.1",
   "httpx2==2.16.0",
-  "mypy==2.3.0",
+  "mypy==2.4.1",
   "pip-audit==2.10.1",
-  "pyright==1.1.411",
-  "pytest==9.1.1",
-  "pytest-cov==7.0.0",
-  "ruff==0.16.0",
-  "twine==6.2.0",
+  "pyright==1.1.414",
+  "pytest==9.2.0",
+  "pytest-cov==7.1.0",
+  "ruff==0.17.3",
+  "twine==7.0.0",
   "webauthn==3.0.1",
 ]
 
 [tool.uv]
-required-version = "==0.12.0"
+required-version = "==0.13.7"
+exclude-newer = "14 days"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/opendle"]

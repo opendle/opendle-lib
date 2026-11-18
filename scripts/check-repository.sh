@@ -5,8 +5,8 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repository_root}"
 
-if [[ "$(uv --version)" != "uv 0.12.0"* ]]; then
-  echo "uv 0.12.0 is required." >&2
+if [[ "$(uv --version)" != "uv 0.13.7"* ]]; then
+  echo "uv 0.13.7 is required." >&2
   exit 1
 fi
 

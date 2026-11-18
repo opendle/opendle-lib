@@ -197,8 +197,16 @@ Python runtime contract. See [decision 0002](decisions/0002-share-development-ca
 
 The repository uses Ruff, Pyright, Mypy, pytest, coverage, pip-audit, Hatchling,
 and Twine. The lock file and exact development versions make local and CI
-checks reproducible. The dynamic `uv` dependency-age gate prevents selection
-of releases that are less than 14 complete days old.
+checks reproducible. `[tool.uv] exclude-newer = "14 days"` in
+`pyproject.toml` prevents selection of releases that are less than 14
+complete days old. `uv.lock` records this relative span, so the lock stays
+valid as time passes. `scripts/dependency-age-gate.sh check` rejects a lock
+without a span of 14 days or more.
+
+Dependabot (`.github/dependabot.yml`) opens one weekly grouped pull request
+for each ecosystem (`uv`, `npm`, `github-actions`) and one grouped pull
+request for security updates. Its 14-day cooldown applies the same rule,
+because Dependabot does not read `exclude-newer`.
 
 Pyright package verification rejects an unknown or ambiguous public type. It
 also rejects a public function or class without documentation. This package

@@ -20,29 +20,25 @@ fi
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if date -u -v-1d +%Y-%m-%d >/dev/null 2>&1; then
-  cutoff="$(date -u -v-"${minimum_age_days}"d +%Y-%m-%dT00:00:00Z)"
-else
-  cutoff="$(date -u -d "${minimum_age_days} days ago" +%Y-%m-%dT00:00:00Z)"
-fi
-
+# pyproject.toml sets `[tool.uv] exclude-newer = "14 days"`. uv records it in
+# uv.lock as a relative span, so the lock stays valid as time passes.
 case "${action}" in
   add)
     if [[ "$#" -eq 0 ]]; then
       usage
       exit 2
     fi
-    uv add --project "${repository_root}" --exclude-newer "${cutoff}" "$@"
+    uv add --project "${repository_root}" "$@"
     ;;
   remove)
     if [[ "$#" -eq 0 ]]; then
       usage
       exit 2
     fi
-    uv remove --project "${repository_root}" --exclude-newer "${cutoff}" "$@"
+    uv remove --project "${repository_root}" "$@"
     ;;
   lock)
-    uv lock --project "${repository_root}" --exclude-newer "${cutoff}" "$@"
+    uv lock --project "${repository_root}" "$@"
     ;;
   check)
     if [[ "$#" -ne 0 ]]; then
@@ -54,19 +50,18 @@ case "${action}" in
       echo "uv.lock is missing. Run the lock action first." >&2
       exit 1
     fi
-    locked_cutoff="$(sed -n \
-      '/^\[options\]/,/^\[/ s/^exclude-newer = "\(.*\)"/\1/p' \
+    locked_span="$(sed -n \
+      '/^\[options\]/,/^\[/ s/^exclude-newer-span = "\(.*\)"/\1/p' \
       "${lock_path}")"
-    if ! [[ "${locked_cutoff}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T00:00:00Z$ ]]; then
-      echo "uv.lock does not contain a valid dependency-age cutoff." >&2
+    if ! [[ "${locked_span}" =~ ^P([0-9]+)D$ ]]; then
+      echo "uv.lock does not contain a relative dependency-age span in days." >&2
       exit 1
     fi
-    if [[ "${locked_cutoff}" > "${cutoff}" ]]; then
+    if [[ "${BASH_REMATCH[1]}" -lt "${minimum_age_days}" ]]; then
       echo "uv.lock permits dependencies that are less than ${minimum_age_days} days old." >&2
       exit 1
     fi
-    uv lock --project "${repository_root}" --check \
-      --exclude-newer "${locked_cutoff}"
+    uv lock --project "${repository_root}" --check
     ;;
   sync)
     uv sync --project "${repository_root}" --frozen "$@"
