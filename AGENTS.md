@@ -50,9 +50,11 @@ current `main` dependency. Keep only product-specific UI in the host project.
    small amount of clear, maintainable code.
 8. Run the `selfreview` skill after non-trivial edits. Review all owned changes
    again, and then run `./scripts/check-repository.sh`.
-9. After a task is complete, commit all owned changes and push `main` to
-   `origin`, unless the user gives a different instruction. Do not report
-   completion until the push succeeds.
+9. After a large change, run `jscpd --silent src scripts`. Merge the duplicates
+   that the change adds. Do not make jscpd a gate.
+10. After a task is complete, commit all owned changes and push `main` to
+    `origin`, unless the user gives a different instruction. Do not report
+    completion until the push succeeds.
 
 ## Critical review and questions
 
