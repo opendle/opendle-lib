@@ -116,4 +116,12 @@ grep -Fqx "Copyright 2026 tubededentifrice" LICENSE.md
 grep -Fq "FSL-1.1-ALv2" README.md
 grep -Fq "public and source-available" README.md
 
+# Report copied code in the changed files. This report does not fail the check.
+if command -v jscpd >/dev/null; then
+  jscpd --changed --baseline "$(git rev-parse --git-dir)/jscpd-baseline.json" \
+    --reporters ai --no-colors src scripts || true
+else
+  echo "jscpd is not installed: no duplicate report."
+fi
+
 echo "Repository checks passed."
