@@ -68,6 +68,10 @@ caller-supplied S3 client and keeps a local cache with a byte limit. It
 deletes the oldest cache files first. It has no dependency. The host owns the
 bucket, the credentials, and the rule for when a local copy is not necessary.
 
+The public `opendle.emoji` module finds and counts emoji in a text with one
+regular expression. It has no dependency. The host owns the storage of the
+counts and the rule for which texts it counts.
+
 The public `opendle.contracts` module contains general JSON-equivalent types
 and RFC 8785 canonical JSON encoding. Ontology keeps compatibility aliases for
 these imports. Strict JSON, bounded standard-library HTTP, normalized headers,

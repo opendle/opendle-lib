@@ -225,6 +225,15 @@ call. `drop_local` deletes a local copy when the host does not need it.
 with `delete_object(Bucket=..., Key=...)`. The host must check all references
 before deletion. A bucket error keeps the local copy. A repeated delete is safe.
 
+## Emoji counts
+
+`opendle.emoji.emoji_counts(text)` returns each emoji of a text with its
+number of uses, in the order of the first use. One emoji keeps its skin tone,
+its tags and its joined parts. Flags and keycaps are one emoji. A symbol that
+shows as text by default, such as `©`, counts only with U+FE0F or a skin tone
+after it. `EMOJI_PATTERN` is the same expression with ASCII escapes only, so
+PostgreSQL can use it in SQL.
+
 ## Higgsfield image requests
 
 Install `opendle-lib[higgsfield]` to use `opendle.higgsfield.generate_image`.
