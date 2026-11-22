@@ -208,7 +208,15 @@ factory that returns a context manager for one unit of work, and a cookie
 prefix. `router()` returns the routes for `/session`, `/register`, `/login`,
 `/logout`, `/passkeys`, and `/tokens`. `principal` and `session_principal`
 are request dependencies for host routes. A session request that is not safe
-must have the configured `Origin`. There is no rate limit.
+must have the configured `Origin`. There is no rate limit. After its own check,
+for example a password or a one-time email link, a host calls `sign_in` to
+start the browser session of that user.
+
+`opendle.password` hashes a password with `hashlib.scrypt` and a new salt, and
+checks it in constant time. It has no dependency. A new password must have
+from 12 to 256 characters. A check without a stored hash does the same work,
+so an unknown account takes the same time. The host stores the hash and owns
+the account identifier.
 
 `opendle.passkey_testing.SoftPasskey` answers WebAuthn options in tests, so a
 consumer can test its store and routes without a browser.

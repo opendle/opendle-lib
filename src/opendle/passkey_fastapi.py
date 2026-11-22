@@ -38,6 +38,8 @@ __all__ = [
     "AuthStore",
     "AuthStoreFactory",
     "PasskeyAuth",
+    "SessionView",
+    "UserView",
 ]
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -239,6 +241,26 @@ class PasskeyAuth:
             "same-origin",
         }:
             raise HTTPException(status_code=403, detail="Invalid request origin.")
+
+    def sign_in(
+        self, user_id: str, request: Request, response: Response
+    ) -> SessionView:
+        """Start a browser session for a user that the host has verified.
+
+        Use it after a check that is not a passkey, for example a password
+        or a one-time email link. The function replaces the current session
+        of the request and sets the session cookie on `response`.
+        """
+        principal = Principal(user_id=user_id, kind="session")
+
+        def operation(services: _Services) -> tuple[str, SessionView]:
+            issued = services.sessions.start_session(
+                user_id,
+                replaced_secret=request.cookies.get(self._session_cookie),
+            )
+            return issued.secret, _session_view(services, principal)
+
+        return self._session_response(self._run(operation), response)
 
     def router(self) -> APIRouter:  # noqa: C901 - one flat route table.
         """Return the routes for sign-in, passkeys, and API tokens."""

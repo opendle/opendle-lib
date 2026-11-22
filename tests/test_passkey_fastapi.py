@@ -4,12 +4,12 @@ from contextlib import contextmanager
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Annotated, cast
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
 from opendle.local_auth import Principal, new_secret
 from opendle.passkey import PasskeyConfig, PasskeyService
-from opendle.passkey_fastapi import AuthStore, PasskeyAuth
+from opendle.passkey_fastapi import AuthStore, PasskeyAuth, SessionView
 from passkey_support import (
     CONFIG,
     ORIGIN,
@@ -160,6 +160,30 @@ def test_sign_in_replaces_the_session_and_logout_ends_it() -> None:
     assert site.store.sessions == {}
     assert site.client.get("/any").status_code == HTTPStatus.UNAUTHORIZED
     assert site.client.post("/auth/logout").status_code == HTTPStatus.NO_CONTENT
+
+
+def test_a_host_check_starts_a_session() -> None:
+    """`sign_in` replaces the session after a check of the host."""
+    site = Site()
+    site.register()
+    user_id = next(iter(site.store.users))
+    first_hash = next(iter(site.store.sessions))
+    app = FastAPI()
+
+    @app.post("/password")
+    def password(  # pyright: ignore[reportUnusedFunction]
+        request: Request, response: Response
+    ) -> SessionView:
+        return site.auth.sign_in(user_id, request, response)
+
+    client = TestClient(app, base_url=ORIGIN, cookies=site.client.cookies)
+    signed_in = client.post("/password")
+
+    assert signed_in.json() == {"user": {"id": user_id, "name": "Owner"}}
+    assert signed_in.headers["cache-control"] == "no-store"
+    assert signed_in.headers.get_list("set-cookie")[0].startswith(f"{_SESSION_COOKIE}=")
+    assert list(site.store.sessions) != [first_hash]
+    assert len(site.store.sessions) == 1
 
 
 def test_a_refused_ceremony_keeps_its_used_challenge_and_reports_a_status() -> None:
