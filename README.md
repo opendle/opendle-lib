@@ -264,6 +264,11 @@ supply the selected transport strategy, common level, and exact mapped value.
 Hosts keep model configuration, inheritance, adapter defaults, and message
 composition. The module has no framework or transport dependency.
 
+`opendle.mail` builds UTF-8 plain text messages and sends them through an
+SMTP submission server with STARTTLS or implicit TLS. It verifies the server
+certificate. It has no dependency. Error text and the settings representation
+do not contain the password. The caller owns recipients, text and retries.
+
 `opendle.web_push` supplies validated browser subscriptions, stable VAPID
 keys derived from a caller-owned secret and context, and encrypted Web Push
 delivery. Install the `web-push` extra. It accepts the Chrome, Firefox, Apple
