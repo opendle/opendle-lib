@@ -272,10 +272,19 @@ supply the selected transport strategy, common level, and exact mapped value.
 Hosts keep model configuration, inheritance, adapter defaults, and message
 composition. The module has no framework or transport dependency.
 
-`opendle.mail` builds UTF-8 plain text messages and sends them through an
-SMTP submission server with STARTTLS or implicit TLS. It verifies the server
-certificate. It has no dependency. Error text and the settings representation
-do not contain the password. The caller owns recipients, text and retries.
+`opendle.mail` builds UTF-8 plain text messages, or text and HTML messages,
+and sends them through an SMTP submission server with STARTTLS or implicit
+TLS. It verifies the server certificate. It has no dependency. Error text and
+the settings representation do not contain the password. The caller owns
+recipients, text and retries.
+
+`opendle.mail_template` renders one branded email layout from one
+`EmailContent`: a label, a heading, paragraphs, one main button, sections of
+rows with links, a note and a footer. The HTML part and the text part come
+from the same content. The HTML uses tables and inline styles for the common
+email clients and has dark colors for clients that support them. The module
+escapes each value and accepts only HTTP and HTTPS links. The host supplies
+the brand (name, URL, PNG logo, accent color, fonts) and the content.
 
 `opendle.web_push` supplies validated browser subscriptions, stable VAPID
 keys derived from a caller-owned secret and context, and encrypted Web Push

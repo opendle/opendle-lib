@@ -244,6 +244,9 @@ library. It always uses TLS and rejects line breaks in headers. A failure
 raises `MailError` with the server name and the error type only, so a server
 reply cannot show a credential. The host owns the recipients, the message text
 and the retry policy.
+`opendle.mail_template` keeps the email design in one place: the host gives
+structured content and a brand, never HTML. One content gives the text and
+the HTML part, so the two parts cannot differ.
 
 The optional `opendle.web_push` module validates browser push destinations
 and encryption keys, derives VAPID keys with a separate HKDF context, and uses

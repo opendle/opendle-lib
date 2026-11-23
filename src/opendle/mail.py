@@ -1,4 +1,4 @@
-"""Send plain text email through an authenticated SMTP submission server.
+"""Send email through an authenticated SMTP submission server.
 
 The module uses only the standard library. Connections always use TLS: either
 STARTTLS on a submission port or TLS from the first byte. The caller owns the
@@ -17,7 +17,13 @@ from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from typing import Literal
 
-__all__ = ["MailError", "SmtpSettings", "plain_text_message", "send_message"]
+__all__ = [
+    "MailError",
+    "SmtpSettings",
+    "html_message",
+    "plain_text_message",
+    "send_message",
+]
 
 type Security = Literal["starttls", "tls"]
 _SECURITY_MODES: frozenset[str] = frozenset({"starttls", "tls"})
@@ -77,6 +83,29 @@ class SmtpSettings:
         _address(self.sender, "sender")
 
 
+def _headers(
+    *,
+    sender: str | Address,
+    to: str | Address,
+    subject: str,
+    reply_to: str | Address | None,
+) -> EmailMessage:
+    """Return a message with validated addresses, a date and a message ID."""
+    if "\r" in subject or "\n" in subject:
+        msg = "The subject must be one line."
+        raise ValueError(msg)
+    sender_address = _address(sender, "sender")
+    message = EmailMessage()
+    message["From"] = sender_address
+    message["To"] = _address(to, "recipient")
+    if reply_to is not None:
+        message["Reply-To"] = _address(reply_to, "reply-to")
+    message["Subject"] = subject
+    message["Date"] = formatdate(localtime=False, usegmt=True)
+    message["Message-ID"] = make_msgid(domain=sender_address.domain)
+    return message
+
+
 def plain_text_message(
     *,
     sender: str | Address,
@@ -91,19 +120,29 @@ def plain_text_message(
     subject. Give an ``Address`` to add a display name; the email package
     rejects a display name with a line break.
     """
-    if "\r" in subject or "\n" in subject:
-        msg = "The subject must be one line."
-        raise ValueError(msg)
-    sender_address = _address(sender, "sender")
-    message = EmailMessage()
-    message["From"] = sender_address
-    message["To"] = _address(to, "recipient")
-    if reply_to is not None:
-        message["Reply-To"] = _address(reply_to, "reply-to")
-    message["Subject"] = subject
-    message["Date"] = formatdate(localtime=False, usegmt=True)
-    message["Message-ID"] = make_msgid(domain=sender_address.domain)
+    message = _headers(sender=sender, to=to, subject=subject, reply_to=reply_to)
     message.set_content(body)
+    return message
+
+
+def html_message(  # noqa: PLR0913 - A message needs both parts and all headers.
+    *,
+    sender: str | Address,
+    to: str | Address,
+    subject: str,
+    text: str,
+    html: str,
+    reply_to: str | Address | None = None,
+) -> EmailMessage:
+    """Build a UTF-8 ``multipart/alternative`` message with text and HTML.
+
+    A client that cannot show HTML shows ``text``. The address and subject
+    rules are the same as for ``plain_text_message``. The caller owns the
+    HTML and must escape all values in it.
+    """
+    message = _headers(sender=sender, to=to, subject=subject, reply_to=reply_to)
+    message.set_content(text)
+    message.add_alternative(html, subtype="html")
     return message
 
 
