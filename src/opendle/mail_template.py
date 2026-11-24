@@ -1,10 +1,11 @@
 """Render one branded email layout as HTML and plain text from one content.
 
 A host describes an email with ``EmailContent``: a heading, paragraphs, one
-main action, sections of items and a note. ``render_email`` gives the two
-parts from the same content, so the HTML and the text never differ.
-``email_message`` builds the ``multipart/alternative`` message for
-``opendle.mail.send_message``.
+main action, a preview card, sections of items and a note. ``render_email``
+gives the two parts from the same content, so the HTML and the text never
+differ. ``email_message`` builds the ``multipart/alternative`` message for
+``opendle.mail.send_message``. The message carries each ``EmailImage`` as an
+inline part, so the client shows it without a remote request.
 
 The HTML uses tables and inline styles, which the common email clients show
 the same way. A client with dark mode support gets dark colors. The module
@@ -15,8 +16,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from email.utils import make_msgid
 from html import escape
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import urlsplit
 
 from opendle.mail import html_message
 
@@ -27,8 +30,10 @@ if TYPE_CHECKING:
 __all__ = [
     "EmailBrand",
     "EmailContent",
+    "EmailImage",
     "EmailItem",
     "EmailLink",
+    "EmailPreview",
     "EmailSection",
     "EmailTone",
     "RenderedEmail",
@@ -47,6 +52,10 @@ _BORDER = "#e9e3d9"
 _TEXT = "#2a2621"
 _BODY = "#4a443c"
 _MUTED = "#7a7166"
+_IMAGE_TYPES = frozenset({"image/gif", "image/jpeg", "image/png"})
+# The largest side of a preview picture and the side of a row picture, in pixels.
+_PREVIEW_IMAGE = 80
+_ROW_IMAGE = 24
 # Spaces after the preheader stop a client from showing the body text there.
 _PREHEADER_FILL = "&#8199;&#65279;&#847; " * 40
 
@@ -122,12 +131,36 @@ class EmailLink:
 
 
 @dataclass(frozen=True, slots=True)
+class EmailImage:
+    """Give a PNG, JPEG or GIF picture that the message carries inline.
+
+    ``width`` and ``height`` are the pixel size of ``content``. With them, the
+    layout keeps the aspect ratio in clients that ignore CSS sizes.
+    """
+
+    content: bytes = field(repr=False)
+    content_type: str
+    width: int | None = None
+    height: int | None = None
+
+    def __post_init__(self) -> None:
+        """Reject a type that the common clients do not show, or a bad size."""
+        if self.content_type not in _IMAGE_TYPES:
+            msg = "An email image must be a PNG, JPEG or GIF picture."
+            raise ValueError(msg)
+        if any(side is not None and side <= 0 for side in (self.width, self.height)):
+            msg = "An email image size must be positive."
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
 class EmailItem:
-    """Show one row of a section: a title, an optional detail and a link."""
+    """Show one row: a title, an optional detail, a link and a small picture."""
 
     title: str
     detail: str = ""
     link: EmailLink | None = None
+    image: EmailImage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,11 +172,26 @@ class EmailSection:
 
 
 @dataclass(frozen=True, slots=True)
+class EmailPreview:
+    """Show a compact card of one thing, for example a post and its channels.
+
+    The card has an optional picture, a title, a short text and one row for
+    each item. Each row shows its picture, or the first letter of its title.
+    """
+
+    title: str
+    text: str = ""
+    image: EmailImage | None = None
+    items: tuple[EmailItem, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class EmailContent:
     """Describe one email. Each text is plain text; the layout escapes it.
 
     ``label`` is a short word above the heading, in the color of ``tone``.
     ``preheader`` is the summary that a client shows next to the subject.
+    ``preview`` is a card below the main action.
     ``footer`` is the text below the card, for example why the person gets
     the email, and ``footer_link`` is where the person changes that.
     """
@@ -152,6 +200,7 @@ class EmailContent:
     heading: str
     paragraphs: tuple[str, ...] = ()
     action: EmailLink | None = None
+    preview: EmailPreview | None = None
     sections: tuple[EmailSection, ...] = ()
     note: str = ""
     label: str = ""
@@ -163,11 +212,40 @@ class EmailContent:
 
 @dataclass(frozen=True, slots=True)
 class RenderedEmail:
-    """Give the subject and the two parts of one email."""
+    """Give the subject, the two parts and the inline pictures of one email.
+
+    The HTML part refers to each picture as ``cid:`` followed by its content ID.
+    """
 
     subject: str
     text: str
     html: str
+    images: tuple[tuple[str, EmailImage], ...] = ()
+
+
+class _Images:
+    """Give each different picture of one email one content ID."""
+
+    def __init__(self, domain: str) -> None:
+        self._domain = domain
+        self._ids: dict[tuple[bytes, str], str] = {}
+        self.parts: list[tuple[str, EmailImage]] = []
+
+    def source(self, image: EmailImage) -> str:
+        key = (image.content, image.content_type)
+        if key not in self._ids:
+            content_id = make_msgid(domain=self._domain)[1:-1]
+            self._ids[key] = content_id
+            self.parts.append((content_id, image))
+        return f"cid:{escape(self._ids[key])}"
+
+
+def _fit(image: EmailImage, side: int) -> tuple[int, int | None]:
+    """Return a display size inside a square. Without a height, the client scales."""
+    if image.width is None or image.height is None:
+        return side, None
+    scale = side / max(image.width, image.height)
+    return max(1, round(image.width * scale)), max(1, round(image.height * scale))
 
 
 def _text(value: str) -> str:
@@ -202,41 +280,133 @@ def _button(link: EmailLink, color: str, font: str) -> str:
     )
 
 
-def _section(section: EmailSection, brand: EmailBrand) -> str:
+def _picture(image: EmailImage, side: int, images: _Images, style: str) -> str:
+    width, height = _fit(image, side)
+    size = f'width="{width}"' + (f' height="{height}"' if height else "")
+    css = f"width:{width}px;" + (f"height:{height}px;" if height else "height:auto;")
+    return (
+        f'<img src="{images.source(image)}" {size} alt="" '
+        f'style="display:block;{css}border:0;{style}">'
+    )
+
+
+def _row_picture(item: EmailItem, brand: EmailBrand, images: _Images) -> str:
+    """Return the row picture, or the first letter of the title in a circle."""
+    radius = f"border-radius:{_ROW_IMAGE // 2}px;"
+    if item.image is not None:
+        return _picture(item.image, _ROW_IMAGE, images, radius)
+    letter = escape(item.title.strip()[:1].upper())
+    return (
+        f'<div class="m-initial" style="width:{_ROW_IMAGE}px;height:{_ROW_IMAGE}px;'
+        f"{radius}background:{_mix(brand.accent, _CARD, 0.14)};"
+        f"color:{brand.accent};font-size:12px;font-weight:700;"
+        f'line-height:{_ROW_IMAGE}px;text-align:center;">{letter}</div>'
+    )
+
+
+def _row(
+    item: EmailItem,
+    brand: EmailBrand,
+    images: _Images,
+    *,
+    padding: str,
+    picture: bool,
+) -> str:
+    """Return one table row: an optional picture, the title, detail and link."""
     rule = f"border-top:1px solid {_BORDER};"
-    rows: list[str] = []
-    for item in section.items:
-        detail = (
-            f'<div class="m-muted" style="margin-top:3px;font-size:13.5px;'
-            f'line-height:1.5;color:{_MUTED};">{_text(item.detail)}</div>'
-            if item.detail
-            else ""
+    cell = f'class="m-rule" valign="top" style="{rule}padding:{padding};'
+    detail = (
+        f'<div class="m-muted" style="margin-top:3px;font-size:13.5px;'
+        f'line-height:1.5;color:{_MUTED};">{_text(item.detail)}</div>'
+        if item.detail
+        else ""
+    )
+    link = (
+        f'<a class="m-link" href="{escape(item.link.url)}" target="_blank" '
+        f'style="font-size:13.5px;font-weight:600;color:{brand.accent};'
+        f'text-decoration:none;">{escape(item.link.label)}&nbsp;&rarr;</a>'
+        if item.link
+        else ""
+    )
+    image = (
+        f'<td width="{_ROW_IMAGE + 12}" {cell}padding-right:12px;">'
+        f"{_row_picture(item, brand, images)}</td>"
+        if picture or item.image is not None
+        else ""
+    )
+    return (
+        f'<tr>{image}<td {cell}">'
+        f'<div class="m-text" style="font-size:14.5px;font-weight:600;'
+        f'line-height:1.45;color:{_TEXT};">{_text(item.title)}</div>'
+        f'{detail}</td><td align="right" {cell}padding-left:16px;'
+        f'white-space:nowrap;">{link}</td></tr>'
+    )
+
+
+def _rows(
+    items: tuple[EmailItem, ...],
+    brand: EmailBrand,
+    images: _Images,
+    *,
+    padding: str,
+    picture: bool = False,
+) -> str:
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'border="0">'
+        + "".join(
+            _row(item, brand, images, padding=padding, picture=picture)
+            for item in items
         )
-        link = (
-            f'<a class="m-link" href="{escape(item.link.url)}" target="_blank" '
-            f'style="font-size:13.5px;font-weight:600;color:{brand.accent};'
-            f'text-decoration:none;">{escape(item.link.label)}&nbsp;&rarr;</a>'
-            if item.link
-            else ""
-        )
-        rows.append(
-            f'<tr><td class="m-rule" valign="top" style="{rule}padding:14px 0;">'
-            f'<div class="m-text" style="font-size:14.5px;font-weight:600;'
-            f'line-height:1.45;color:{_TEXT};">{_text(item.title)}</div>'
-            f'{detail}</td><td class="m-rule" align="right" valign="top" '
-            f'style="{rule}padding:14px 0 14px 16px;white-space:nowrap;">'
-            f"{link}</td></tr>"
-        )
+        + "</table>"
+    )
+
+
+def _section(section: EmailSection, brand: EmailBrand, images: _Images) -> str:
     return (
         f'<div class="m-muted" style="margin:28px 0 6px;font-size:11.5px;'
         f"font-weight:700;letter-spacing:0.08em;text-transform:uppercase;"
         f'color:{_MUTED};">{escape(section.title)}</div>'
-        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-        f'border="0">{"".join(rows)}</table>'
+        + _rows(section.items, brand, images, padding="14px 0")
     )
 
 
-def _html(brand: EmailBrand, content: EmailContent) -> str:
+def _preview(preview: EmailPreview, brand: EmailBrand, images: _Images) -> str:
+    """Return a bordered card: picture, title and text, then one row per item."""
+    picture = (
+        '<td valign="top" style="padding-right:14px;">'
+        + _picture(preview.image, _PREVIEW_IMAGE, images, "border-radius:8px;")
+        + "</td>"
+        if preview.image is not None
+        else ""
+    )
+    text = (
+        f'<div class="m-muted" style="margin-top:4px;font-size:13.5px;'
+        f'line-height:1.5;color:{_MUTED};">{_text(preview.text)}</div>'
+        if preview.text
+        else ""
+    )
+    head = _table(
+        f'{picture}<td valign="top"><div class="m-text" style="font-size:15px;'
+        f'font-weight:600;line-height:1.4;color:{_TEXT};">{_text(preview.title)}'
+        f"</div>{text}</td>"
+    )
+    rows = (
+        f'<tr><td style="padding:0 16px;">'
+        f"{_rows(preview.items, brand, images, padding='10px 0', picture=True)}"
+        "</td></tr>"
+        if preview.items
+        else ""
+    )
+    return (
+        '<table role="presentation" class="m-rule" width="100%" cellpadding="0" '
+        f'cellspacing="0" border="0" style="margin:24px 0 4px;border:1px solid '
+        f'{_BORDER};border-radius:12px;border-collapse:separate;">'
+        f'<tr><td style="padding:16px;">{head}</td></tr>{rows}</table>'
+    )
+
+
+def _html(brand: EmailBrand, content: EmailContent, images: _Images) -> str:
     tone = brand.accent if content.tone == "neutral" else _TONES[content.tone]
     logo = (
         f'<img src="{escape(brand.logo_url)}" width="32" height="32" alt="" '
@@ -272,7 +442,10 @@ def _html(brand: EmailBrand, content: EmailContent) -> str:
     action = (
         _button(content.action, brand.accent, brand.body_font) if content.action else ""
     )
-    sections = "".join(_section(section, brand) for section in content.sections)
+    preview = (
+        _preview(content.preview, brand, images) if content.preview is not None else ""
+    )
+    sections = "".join(_section(section, brand, images) for section in content.sections)
     note = (
         f'<p class="m-muted m-rule" style="margin:20px 0 0;padding-top:18px;'
         f"border-top:1px solid {_BORDER};font-size:13px;line-height:1.6;"
@@ -310,7 +483,7 @@ def _html(brand: EmailBrand, content: EmailContent) -> str:
     )
     card = _table(
         f'<td class="m-pad" style="padding:36px 40px;{font}">'
-        f"{label}{heading}{body}{action}{sections}{note}</td>"
+        f"{label}{heading}{body}{action}{preview}{sections}{note}</td>"
     )
     column = _table(
         f'<td style="padding:0 6px 18px;">{header}</td></tr><tr>'
@@ -351,6 +524,8 @@ body {{ margin: 0; padding: 0; -webkit-text-size-adjust: 100%; }}
   .m-label {{ background: {_mix(tone, _DARK_CARD, 0.22)} !important;
     color: {_mix(tone, "#ffffff", 0.6)} !important; }}
   .m-link {{ color: {_mix(brand.accent, "#ffffff", 0.6)} !important; }}
+  .m-initial {{ background: {_mix(brand.accent, _DARK_CARD, 0.22)} !important;
+    color: {_mix(brand.accent, "#ffffff", 0.6)} !important; }}
 }}
 </style>
 </head>
@@ -361,19 +536,28 @@ body {{ margin: 0; padding: 0; -webkit-text-size-adjust: 100%; }}
 """
 
 
+def _plain_items(lines: list[str], items: tuple[EmailItem, ...]) -> str:
+    for item in items:
+        lines.append(f"- {item.title}")
+        if item.detail:
+            lines.extend(f"  {line}" for line in item.detail.splitlines())
+        if item.link:
+            lines.append(f"  {item.link.label}: {item.link.url}")
+    return "\n".join(lines)
+
+
 def _plain(brand: EmailBrand, content: EmailContent) -> str:
     parts = [content.heading, *content.paragraphs]
     if content.action:
         parts.append(f"{content.action.label}: {content.action.url}")
-    for section in content.sections:
-        lines = [section.title.upper()]
-        for item in section.items:
-            lines.append(f"- {item.title}")
-            if item.detail:
-                lines.extend(f"  {line}" for line in item.detail.splitlines())
-            if item.link:
-                lines.append(f"  {item.link.label}: {item.link.url}")
-        parts.append("\n".join(lines))
+    if content.preview is not None:
+        preview = content.preview
+        head = [preview.title, *([preview.text] if preview.text else [])]
+        parts.append(_plain_items(head, preview.items))
+    parts.extend(
+        _plain_items([section.title.upper()], section.items)
+        for section in content.sections
+    )
     if content.note:
         parts.append(content.note)
     footer = list(content.footer)
@@ -385,11 +569,14 @@ def _plain(brand: EmailBrand, content: EmailContent) -> str:
 
 
 def render_email(brand: EmailBrand, content: EmailContent) -> RenderedEmail:
-    """Return the subject, the plain text and the HTML of one email."""
+    """Return the subject, the plain text, the HTML and the inline pictures."""
+    images = _Images(urlsplit(brand.url).hostname or "localhost")
+    html = _html(brand, content, images)
     return RenderedEmail(
         subject=content.subject,
         text=_plain(brand, content),
-        html=_html(brand, content),
+        html=html,
+        images=tuple(images.parts),
     )
 
 
@@ -403,10 +590,12 @@ def email_message(
 ) -> EmailMessage:
     """Build the ``multipart/alternative`` message of one email.
 
-    Raise ValueError for an invalid address or a line break in the subject.
+    With pictures, the HTML part is a ``multipart/related`` part that also
+    holds each picture inline. Raise ValueError for an invalid address or a
+    line break in the subject.
     """
     rendered = render_email(brand, content)
-    return html_message(
+    message = html_message(
         sender=sender,
         to=to,
         subject=rendered.subject,
@@ -414,3 +603,15 @@ def email_message(
         html=rendered.html,
         reply_to=reply_to,
     )
+    # ``html_message`` gives the text part first and the HTML part second.
+    _plain_part, html = message.iter_parts()
+    for content_id, image in rendered.images:
+        maintype, subtype = image.content_type.split("/")
+        html.add_related(
+            image.content,
+            maintype,
+            subtype,
+            cid=f"<{content_id}>",
+            disposition="inline",
+        )
+    return message

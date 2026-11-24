@@ -7,8 +7,10 @@ import pytest
 from opendle.mail_template import (
     EmailBrand,
     EmailContent,
+    EmailImage,
     EmailItem,
     EmailLink,
+    EmailPreview,
     EmailSection,
     email_message,
     render_email,
@@ -149,3 +151,91 @@ def test_a_row_can_have_only_a_title_and_a_link() -> None:
         ),
     )
     assert "POSTS\n- X\n  Open: https://x.example\n" in rendered.text
+
+
+_JPEG = EmailImage(b"\xff\xd8jpeg", "image/jpeg", width=320, height=180)
+_PNG = EmailImage(b"\x89PNGpicture", "image/png")
+PREVIEW = EmailContent(
+    subject="Song is live",
+    heading="Song is live",
+    action=EmailLink("Open", "https://app.example/posts/1"),
+    preview=EmailPreview(
+        "Song",
+        "New single <now>",
+        image=_JPEG,
+        items=(
+            EmailItem(
+                "Studio", "YouTube", EmailLink("View", "https://y.example/1"), _PNG
+            ),
+            EmailItem("band page", "Facebook"),
+            EmailItem("Studio 2", "Instagram", image=_PNG),
+        ),
+    ),
+)
+
+
+def test_a_preview_shows_a_card_with_its_rows() -> None:
+    """The card has the title, the text and one row for each item."""
+    rendered = render_email(BRAND, PREVIEW)
+    assert rendered.text.startswith(
+        "Song is live\n\n"
+        "Open: https://app.example/posts/1\n\n"
+        "Song\nNew single <now>\n"
+        "- Studio\n  YouTube\n  View: https://y.example/1\n"
+        "- band page\n  Facebook\n"
+        "- Studio 2\n  Instagram\n\n"
+    )
+    html = rendered.html
+    assert html.index(">Open</a>") < html.index("New single &lt;now&gt;")
+    # The picture keeps its aspect ratio inside the 80 pixel square.
+    assert 'width="80" height="45"' in html
+    # A row without a picture shows the first letter of its title.
+    assert ">B</div>" in html
+
+
+def test_the_message_carries_each_different_picture_once() -> None:
+    """Two rows with the same picture use one inline part."""
+    rendered = render_email(BRAND, PREVIEW)
+    assert [image for _cid, image in rendered.images] == [_JPEG, _PNG]
+    assert all(cid.endswith("@app.example") for cid, _image in rendered.images)
+    message = email_message(
+        sender="noreply@app.example",
+        to="owner@example.com",
+        brand=BRAND,
+        content=PREVIEW,
+    )
+    text, related = message.iter_parts()
+    assert text.get_content_type() == "text/plain"
+    assert related.get_content_type() == "multipart/related"
+    html, *pictures = related.iter_parts()
+    assert html.get_content_type() == "text/html"
+    assert [part.get_content() for part in pictures] == [_JPEG.content, _PNG.content]
+    for part in pictures:
+        assert f'src="cid:{part["Content-ID"][1:-1]}"' in html.get_content()
+    assert all(part.get_content_disposition() == "inline" for part in pictures)
+
+
+def test_an_email_without_pictures_has_no_related_part() -> None:
+    """The HTML part stays a single part when the content has no picture."""
+    message = email_message(
+        sender="noreply@app.example",
+        to="owner@example.com",
+        brand=BRAND,
+        content=CONTENT,
+    )
+    assert [part.get_content_type() for part in message.iter_parts()] == [
+        "text/plain",
+        "text/html",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("content_type", "width"),
+    [("image/svg+xml", None), ("image/webp", None), ("image/png", 0)],
+)
+def test_an_image_must_be_a_common_picture(
+    content_type: str, width: int | None
+) -> None:
+    """Clients do not show SVG or WebP pictures reliably."""
+    with pytest.raises(ValueError, match="email image"):
+        EmailImage(b"x", content_type, width=width)

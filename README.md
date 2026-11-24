@@ -279,9 +279,12 @@ the settings representation do not contain the password. The caller owns
 recipients, text and retries.
 
 `opendle.mail_template` renders one branded email layout from one
-`EmailContent`: a label, a heading, paragraphs, one main button, sections of
-rows with links, a note and a footer. The HTML part and the text part come
-from the same content. The HTML uses tables and inline styles for the common
+`EmailContent`: a label, a heading, paragraphs, one main button, a preview
+card, sections of rows with links, a note and a footer. The preview card shows
+a picture, a title, a short text and one row with a small picture for each
+item. The HTML part and the text part come from the same content. The message
+carries each PNG, JPEG or GIF picture as an inline `cid:` part, so the client
+shows it without a remote request. The HTML uses tables and inline styles for the common
 email clients and has dark colors for clients that support them. The module
 escapes each value and accepts only HTTP and HTTPS links. The host supplies
 the brand (name, URL, PNG logo, accent color, fonts) and the content.

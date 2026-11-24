@@ -246,7 +246,10 @@ reply cannot show a credential. The host owns the recipients, the message text
 and the retry policy.
 `opendle.mail_template` keeps the email design in one place: the host gives
 structured content and a brand, never HTML. One content gives the text and
-the HTML part, so the two parts cannot differ.
+the HTML part, so the two parts cannot differ. Content pictures go in the
+message as `multipart/related` parts, not as remote URLs: a private picture
+needs no public route, and clients show inline parts without a remote image
+prompt.
 
 The optional `opendle.web_push` module validates browser push destinations
 and encryption keys, derives VAPID keys with a separate HKDF context, and uses
