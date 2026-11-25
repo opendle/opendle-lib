@@ -233,6 +233,12 @@ call. `drop_local` deletes a local copy when the host does not need it.
 with `delete_object(Bucket=..., Key=...)`. The host must check all references
 before deletion. A bucket error keeps the local copy. A repeated delete is safe.
 
+## Byte counts
+
+`opendle.sizes.format_bytes(size)` writes a byte count in decimal units for
+people, for example `1.5 GB`. It uses the largest unit that keeps a value of
+1 or more and one decimal place at most.
+
 ## Emoji counts
 
 `opendle.emoji.emoji_counts(text)` returns each emoji of a text with its
